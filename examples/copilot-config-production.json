@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "docs-server": {
+      "command": "/usr/local/bin/docs-mcp-server",
+      "args": ["--database", "/var/lib/docs-mcp/docs.db"],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}

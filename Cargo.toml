@@ -1,0 +1,56 @@
+[package]
+name = "docs-mcp-server"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server providing access to latest documentation for Rust, Tauri, React, TypeScript, and Python"
+license = "MIT"
+
+[[bin]]
+name = "docs-mcp-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "update-docs"
+path = "src/bin/update_docs.rs"
+
+[dependencies]
+# Core async runtime
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client and HTML parsing
+reqwest = { version = "0.11", features = ["json"] }
+scraper = "0.18"
+url = "2.4"
+
+# Async utilities
+futures = "0.3"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
+
+# Markdown processing
+pulldown-cmark = "0.9"
+html2md = "0.2"
+
+# Scheduling and utilities
+cron = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4.0", features = ["derive"] }
+lru = "0.12"
+regex = "1.10"
+html-escape = "0.2"
+
+# File system
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[[example]]
+name = "test_db"
+path = "examples/test_db.rs"
