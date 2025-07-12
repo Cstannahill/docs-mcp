@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     }
     
     let main_db = Database::new(&database_url).await?;
-    let model_db = ModelDatabase::new(main_db.pool.clone());
+    let model_db = ModelDatabase::new(main_db.get_pool().clone());
     
     // Initialize model discovery tables
     model_db.initialize().await?;

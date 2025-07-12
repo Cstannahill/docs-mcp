@@ -92,8 +92,17 @@ impl HttpServer {
     pub async fn new(database_url: &str, openai_api_key: Option<String>) -> Result<Self> {
         let db = Database::new(database_url).await?;
         
-        // Run migrations
-        db.run_advanced_features_migration().await?;
+        // Initialize all database schemas during startup
+        // 1. Basic tables are already created in Database::new()
+        // 2. Initialize model discovery tables if needed
+        if let Err(e) = db.initialize_model_discovery().await {
+            tracing::info!("Model discovery initialization skipped: {}", e);
+        }
+        
+        // 3. Run advanced features migration
+        if let Err(e) = db.run_advanced_features_migration().await {
+            tracing::info!("Advanced features migration failed, continuing with basic functionality: {}", e);
+        }
         
         let enhanced_search = EnhancedSearchSystem::new(db.clone(), openai_api_key).await?;
         let chat_interface = ChatInterface::new(enhanced_search.clone()).await?;

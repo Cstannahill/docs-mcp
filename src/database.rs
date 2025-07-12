@@ -1065,6 +1065,97 @@ impl Database {
         Ok(())
     }
 
+    /// Initialize model discovery database tables
+    pub async fn initialize_model_discovery(&self) -> Result<()> {
+        // Create basic model_info table directly without import dependency
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS model_info (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                version TEXT,
+                model_family TEXT NOT NULL,
+                parameter_count INTEGER,
+                context_window INTEGER NOT NULL,
+                max_output_tokens INTEGER,
+                architecture TEXT,
+                training_cutoff TEXT,
+                capabilities TEXT NOT NULL,
+                strengths TEXT NOT NULL,
+                weaknesses TEXT NOT NULL,
+                ideal_use_cases TEXT NOT NULL,
+                supported_formats TEXT NOT NULL,
+                performance_metrics TEXT NOT NULL,
+                quality_scores TEXT NOT NULL,
+                benchmark_results TEXT NOT NULL,
+                availability TEXT NOT NULL,
+                cost_info TEXT NOT NULL,
+                deployment_info TEXT NOT NULL,
+                discovered_at TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                metadata TEXT NOT NULL
+            )
+        "#)
+        .execute(&self.pool)
+        .await?;
+        
+        // Create model_performance_history table
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS model_performance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                measured_at TEXT NOT NULL,
+                tokens_per_second REAL NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                throughput_requests_per_minute REAL NOT NULL,
+                memory_usage_gb REAL,
+                gpu_utilization_percent REAL,
+                cpu_utilization_percent REAL,
+                first_token_latency_ms INTEGER,
+                FOREIGN KEY (model_id) REFERENCES model_info (id)
+            )
+        "#)
+        .execute(&self.pool)
+        .await?;
+        
+        // Create model_availability_history table
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS model_availability_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                is_available BOOLEAN NOT NULL,
+                response_time_ms INTEGER,
+                uptime_percent REAL,
+                FOREIGN KEY (model_id) REFERENCES model_info (id)
+            )
+        "#)
+        .execute(&self.pool)
+        .await?;
+        
+        // Create model_recommendations table
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS model_recommendations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                use_case TEXT NOT NULL,
+                capabilities TEXT NOT NULL,
+                score REAL NOT NULL,
+                calculated_at TEXT NOT NULL,
+                FOREIGN KEY (model_id) REFERENCES model_info (id)
+            )
+        "#)
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(())
+    }
+
+    /// Get a reference to the internal database pool for model discovery initialization
+    pub fn get_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // Missing methods for compilation - these need to be implemented
     pub async fn get_page(&self, page_id: &str) -> Result<Option<DocumentPage>> {
         // TODO: Implement actual database query

@@ -46,9 +46,17 @@ impl McpServer {
     pub async fn new(database_url: &str, openai_api_key: Option<String>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let database = Database::new(database_url).await?;
         
-        // Run advanced features migration
-        database.run_advanced_features_migration().await
-            .map_err(|e| format!("Failed to run advanced features migration: {}", e))?;
+        // Initialize all database schemas during startup  
+        // 1. Basic tables are already created in Database::new()
+        // 2. Initialize model discovery tables if needed
+        if let Err(e) = database.initialize_model_discovery().await {
+            tracing::info!("Model discovery initialization skipped: {}", e);
+        }
+        
+        // 3. Run advanced features migration
+        if let Err(e) = database.run_advanced_features_migration().await {
+            tracing::info!("Advanced features migration failed, continuing with basic functionality: {}", e);
+        }
         
         let enhanced_search = EnhancedSearchSystem::new(database.clone(), openai_api_key).await
             .map_err(|e| format!("Failed to initialize enhanced search system: {}", e))?;

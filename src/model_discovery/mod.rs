@@ -2,7 +2,7 @@
 //! Model discovery and management system
 
 mod ollama_provider;
-mod database;
+pub mod database;
 mod scheduler;
 
 pub use ollama_provider::OllamaModelProvider;

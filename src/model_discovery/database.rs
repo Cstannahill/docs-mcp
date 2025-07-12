@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use tracing::{debug, error, info};
 
 /// Database manager for model discovery data
+#[derive(Clone)]
 pub struct ModelDatabase {
     pool: Pool<Sqlite>,
 }

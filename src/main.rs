@@ -91,6 +91,22 @@ async fn main() -> Result<()> {
     let db_url = format!("sqlite://{}?mode=rwc", db_path);
     let db = Database::new(&db_url).await?;
 
+    // Initialize all database schemas during startup
+    info!("Initializing database schemas...");
+    
+    // 1. Basic tables are already created in Database::new()
+    // 2. Initialize model discovery tables if needed
+    if let Err(e) = db.initialize_model_discovery().await {
+        info!("Model discovery initialization skipped: {}", e);
+    }
+    
+    // 3. Run advanced features migration
+    if let Err(e) = db.run_advanced_features_migration().await {
+        info!("Advanced features migration failed, continuing with basic functionality: {}", e);
+    }
+    
+    info!("Database initialization complete");
+
     // Initialize scheduler for daily updates
     let scheduler = Scheduler::new(db.clone());
     
