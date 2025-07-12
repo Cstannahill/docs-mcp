@@ -15,6 +15,29 @@ use std::sync::Arc;
 use anyhow::{Result, Context};
 use uuid::Uuid;
 
+/// Types of output that agents can produce
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OutputType {
+    /// Textual content (explanations, summaries, etc.)
+    Text,
+    /// Source code or code snippets
+    Code,
+    /// Numerical data (metrics, statistics, etc.)
+    Numerical,
+    /// Vector embeddings
+    Embedding,
+    /// Structured JSON-like data
+    StructuredData,
+    /// Security analysis results
+    SecurityAnalysis,
+    /// Test execution results
+    TestResults,
+    /// Documentation content
+    Documentation,
+    /// Visualization data
+    Visualization,
+}
+
 pub mod model_router;
 // TODO: Implement additional orchestrator modules
 // pub mod task_decomposer;
@@ -98,12 +121,14 @@ impl FlowOrchestrator {
         // 6. Collect metrics and create final result
         let metrics = self.metrics_collector.collect_flow_metrics(&context, &execution_result);
         
+        let fused_output = self.fuse_agent_outputs(&execution_result.task_results);
         Ok(FlowResult {
             flow_id,
             success: execution_result.success,
             results: execution_result.task_results,
             metrics,
             context: context.into(),
+            fused_output,
         })
     }
     
@@ -353,6 +378,7 @@ pub struct FlowResult {
     pub results: HashMap<String, crate::agents::AgentOutput>,
     pub metrics: FlowMetrics,
     pub context: SerializableFlowContext,
+    pub fused_output: serde_json::Value,
 }
 
 /// Metrics collected during flow execution
@@ -1413,5 +1439,674 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "code_analysis");
         assert_eq!(tasks[1].id, "doc_suggestions");
+    }
+    
+    #[test]
+    fn test_output_type_detection() {
+        let orchestrator = create_test_orchestrator();
+        
+        // Create test outputs of different types
+        let text_output = AgentOutput::new().with_field("content", "This is a text output");
+        let code_output = AgentOutput::new()
+            .with_field("code_snippets", vec![serde_json::json!({"language": "rust", "code": "fn main() {}"})])
+            .with_field("agent_name", "CodeAnalyzer");
+        let numerical_output = AgentOutput::new()
+            .with_field("metrics", serde_json::json!({"latency_ms": 250.0, "throughput": 1000.0}))
+            .with_field("agent_name", "PerformanceAnalyzer");
+        let embedding_output = AgentOutput::new()
+            .with_field("embedding", vec![0.1, 0.2, 0.3, 0.4])
+            .with_field("agent_name", "Embedder");
+        
+        // Test type detection
+        assert_eq!(orchestrator.detect_output_type(&text_output), OutputType::Text);
+        assert_eq!(orchestrator.detect_output_type(&code_output), OutputType::Code);
+        assert_eq!(orchestrator.detect_output_type(&numerical_output), OutputType::Numerical);
+        assert_eq!(orchestrator.detect_output_type(&embedding_output), OutputType::Embedding);
+    }
+    
+    #[test]
+    fn test_text_agreement_calculation() {
+        let orchestrator = create_test_orchestrator();
+        
+        // Create test texts with varying degrees of similarity
+        let mut texts = HashMap::new();
+        texts.insert("t1".to_string(), "The quick brown fox jumps over the lazy dog".to_string());
+        texts.insert("t2".to_string(), "A quick brown fox jumped over a lazy dog".to_string());
+        texts.insert("t3".to_string(), "Something completely different with no common words".to_string());
+        
+        // Test agreement calculation
+        let agreement12 = orchestrator.calculate_text_agreement(&HashMap::from([
+            ("t1".to_string(), texts["t1"].clone()),
+            ("t2".to_string(), texts["t2"].clone()),
+        ]));
+        let agreement13 = orchestrator.calculate_text_agreement(&HashMap::from([
+            ("t1".to_string(), texts["t1"].clone()),
+            ("t3".to_string(), texts["t3"].clone()),
+        ]));
+        
+        // Similar texts should have high agreement
+        assert!(agreement12 > 0.5);
+        // Different texts should have low agreement
+        assert!(agreement13 < 0.3);
+    }
+    
+    #[tokio::test]
+    async fn test_fusion_with_multiple_types() {
+        let orchestrator = create_test_orchestrator();
+        
+        // Create a mixed set of outputs
+        let mut task_results = HashMap::new();
+        
+        task_results.insert("text_task".to_string(), AgentOutput::new()
+            .with_field("content", "This is a text analysis result")
+            .with_field("agent_name", "TextAnalyzer")
+            .with_field("metadata", serde_json::json!({"confidence": 0.9})));
+        
+        task_results.insert("code_task".to_string(), AgentOutput::new()
+            .with_field("code_snippets", vec![serde_json::json!({
+                "language": "rust", 
+                "code": "fn main() {\n    println!(\"Hello\");\n}"
+            })])
+            .with_field("agent_name", "CodeGenerator"));
+        
+        task_results.insert("security_task".to_string(), AgentOutput::new()
+            .with_field("vulnerabilities", vec![serde_json::json!({
+                "id": "CVE-2023-12345",
+                "name": "Test Vulnerability",
+                "severity": "high"
+            })])
+            .with_field("agent_name", "SecurityAuditor"));
+        
+        // Perform fusion
+        let fused_output = orchestrator.fuse_agent_outputs(&task_results);
+        
+        // Validate fusion output
+        assert!(fused_output.is_object());
+        assert_eq!(fused_output["status"], "success");
+        assert!(fused_output["output_types"].is_array());
+        assert!(fused_output["contributors"].is_array());
+        
+        // Check for expected content
+        if let Some(content) = fused_output.get("content") {
+            assert!(content.is_string());
+        }
+        
+        if let Some(code_snippets) = fused_output.get("code_snippets") {
+            assert!(code_snippets.is_array());
+            assert_eq!(code_snippets.as_array().unwrap().len(), 1);
+        }
+        
+        if let Some(security) = fused_output.get("security_analysis") {
+            assert!(security.is_object());
+            assert!(security["vulnerabilities"].is_array());
+            assert_eq!(security["vulnerabilities"].as_array().unwrap().len(), 1);
+        }
+    }
+    
+    // Helper function to create a test orchestrator
+    fn create_test_orchestrator() -> FlowOrchestrator {
+        let agent_registry = Arc::new(crate::agents::AgentRegistry::new());
+        let model_router = crate::orchestrator::model_router::ModelRouter::new();
+        FlowOrchestrator::new(agent_registry, model_router)
+    }
+}
+
+impl FlowOrchestrator {
+    /// Advanced fusion logic to combine outputs from multiple agents
+    /// This method handles different output types, performs summarization,
+    /// and applies content-aware fusion strategies
+    fn fuse_agent_outputs(&self, task_results: &HashMap<String, crate::agents::AgentOutput>) -> serde_json::Value {
+        use std::collections::{BTreeMap, HashMap};
+        log::info!("Starting advanced response fusion for {} agent outputs", task_results.len());
+        
+        if task_results.is_empty() {
+            return serde_json::json!({ "status": "error", "message": "No agent outputs to fuse" });
+        }
+        
+        // Early return for single result case
+        if task_results.len() == 1 {
+            let (task_id, output) = task_results.iter().next().unwrap();
+            log::debug!("Single agent output, bypassing fusion for task: {}", task_id);
+            return output.raw_value().unwrap_or_else(|_| {
+                serde_json::json!({
+                    "status": "success",
+                    "result": format!("Direct output from {}", task_id),
+                    "source": task_id
+                })
+            });
+        }
+        
+        // Step 1: Type detection and categorization
+        let mut categorized_outputs: HashMap<OutputType, Vec<(&String, &AgentOutput)>> = HashMap::new();
+        
+        for (task_id, output) in task_results {
+            let output_type = self.detect_output_type(output);
+            log::debug!("Detected output type {:?} for task: {}", output_type, task_id);
+            categorized_outputs
+                .entry(output_type)
+                .or_insert_with(Vec::new)
+                .push((task_id, output));
+        }
+        
+        // Step 2: Quality assessment and scoring
+        let mut quality_scores: HashMap<String, f64> = HashMap::new();
+        for (task_id, output) in task_results {
+            quality_scores.insert(task_id.clone(), self.assess_output_quality(output));
+        }
+        
+        // Sort tasks by quality score (highest first)
+        let mut sorted_tasks: Vec<_> = task_results.keys().collect();
+        sorted_tasks.sort_by(|a, b| {
+            quality_scores.get(*b).unwrap_or(&0.0)
+                .partial_cmp(quality_scores.get(*a).unwrap_or(&0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        // Step 3: Type-specific processing with specialized fusion
+        let mut fused_result = BTreeMap::new();
+        
+        // Apply type-specific fusion for each category
+        for (output_type, outputs) in &categorized_outputs {
+            match output_type {
+                OutputType::Text => {
+                    // Text requires special handling with semantic similarity
+                    let texts: Vec<(&String, &String)> = outputs.iter()
+                        .filter_map(|(id, output)| {
+                            if let Ok(text) = output.get_field::<String>("content") {
+                                Some((id, &text))
+                            } else if let Ok(text) = output.get_field::<String>("text") {
+                                Some((id, &text))
+                            } else if let Ok(text) = output.get_field::<String>("summary") {
+                                Some((id, &text))
+                            } else if let Ok(text) = output.get_field::<String>("message") {
+                                Some((id, &text))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    
+                    if !texts.is_empty() {
+                        // Group similar texts with a similarity threshold
+                        let similarity_threshold = 0.6;
+                        let grouped_texts = self.group_similar_texts(&texts, similarity_threshold);
+                        
+                        // Fuse each group and collect results
+                        let mut fused_texts = Vec::new();
+                        for group in grouped_texts {
+                            let fused = self.fuse_similar_texts(&group);
+                            if !fused.is_empty() {
+                                fused_texts.push(fused);
+                            }
+                        }
+                        
+                        // Add to result
+                        if !fused_texts.is_empty() {
+                            fused_result.insert("content".to_string(), serde_json::json!(fused_texts.join("\n\n")));
+                            fused_result.insert("text_groups".to_string(), serde_json::json!(grouped_texts.len()));
+                        }
+                    }
+                },
+                OutputType::Code => {
+                    // Code snippets consolidation (already handled in original code)
+                    let mut code_snippets = Vec::new();
+                    for (_, output) in outputs {
+                        if let Ok(snippets) = output.get_field::<Vec<serde_json::Value>>("code_snippets") {
+                            code_snippets.extend(snippets.clone());
+                        } else if let Ok(code) = output.get_field::<String>("code") {
+                            if let Ok(lang) = output.get_field::<String>("language") {
+                                code_snippets.push(serde_json::json!({
+                                    "language": lang,
+                                    "code": code
+                                }));
+                            } else {
+                                code_snippets.push(serde_json::json!({
+                                    "language": "unknown",
+                                    "code": code
+                                }));
+                            }
+                        }
+                    }
+                    
+                    // Deduplicate code snippets
+                    let mut unique_snippets = Vec::new();
+                    let mut seen_codes = std::collections::HashSet::new();
+                    
+                    for snippet in code_snippets {
+                        if let (Some(code), Some(lang)) = (
+                            snippet.get("code").and_then(|c| c.as_str()),
+                            snippet.get("language").and_then(|l| l.as_str())
+                        ) {
+                            let key = format!("{}-{}", lang, code);
+                            if !seen_codes.contains(&key) {
+                                seen_codes.insert(key);
+                                unique_snippets.push(snippet);
+                            }
+                        }
+                    }
+                    
+                    fused_result.insert("code_snippets".to_string(), serde_json::json!(unique_snippets));
+                },
+                OutputType::Numerical => {
+                    let aggregated_metrics = self.aggregate_numerical_data(
+                        &outputs.iter()
+                            .filter_map(|(id, output)| {
+                                if let Ok(metrics) = output.get_field::<HashMap<String, f64>>("metrics") {
+                                    Some((id.to_string(), metrics))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    );
+                    fused_result.insert("metrics".to_string(), serde_json::json!(aggregated_metrics));
+                },
+                OutputType::SecurityAnalysis => {
+                    let security_result = self.fuse_security_outputs(outputs);
+                    fused_result.insert("security_analysis".to_string(), security_result);
+                },
+                OutputType::TestResults => {
+                    let test_result = self.fuse_test_results(outputs);
+                    fused_result.insert("test_results".to_string(), test_result);
+                },
+                OutputType::Embedding => {
+                    let embedding_result = self.fuse_embeddings(outputs);
+                    fused_result.insert("embedding".to_string(), embedding_result);
+                },
+                OutputType::Visualization => {
+                    let viz_result = self.fuse_visualization_data(outputs);
+                    fused_result.insert("visualization".to_string(), viz_result);
+                },
+                OutputType::StructuredData => {
+                    // Take the highest quality structured data
+                    if let Some((id, _)) = outputs.iter().max_by(|(id1, _), (id2, _)| {
+                        quality_scores.get(*id1).unwrap_or(&0.0)
+                            .partial_cmp(quality_scores.get(*id2).unwrap_or(&0.0))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
+                        if let Some(output) = task_results.get(*id) {
+                            if let Ok(data) = output.get_field::<serde_json::Value>("data") {
+                                fused_result.insert("data".to_string(), data);
+                            }
+                        }
+                    }
+                },
+                OutputType::Documentation => {
+                    // Similar to text but with documentation-specific handling
+                    let docs: Vec<(&String, &serde_json::Value)> = outputs.iter()
+                        .filter_map(|(id, output)| {
+                            if let Ok(doc) = output.get_field::<serde_json::Value>("documentation") {
+                                Some((*id, &doc))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    
+                    if !docs.is_empty() {
+                        // Select the most comprehensive documentation
+                        if let Some((_, doc)) = docs.iter().max_by(|(_, doc1), (_, doc2)| {
+                            let size1 = doc1.to_string().len();
+                            let size2 = doc2.to_string().len();
+                            size1.cmp(&size2)
+                        }) {
+                            fused_result.insert("documentation".to_string(), (*doc).clone());
+                        }
+                    }
+                },
+            }
+        }
+        
+        // Step 4: Create structured final output
+        let mut fused_output = serde_json::Map::new();
+        fused_output.insert("status".to_string(), serde_json::json!("success"));
+        
+        // Add task contributions with their quality scores
+        let mut contributors = Vec::new();
+        for task_id in &sorted_tasks {
+            contributors.push(serde_json::json!({
+                "task_id": task_id,
+                "agent": task_results[*task_id].get_field::<String>("agent_name").unwrap_or_default(),
+                "quality_score": quality_scores.get(*task_id).unwrap_or(&0.0),
+                "contribution_weight": self.calculate_contribution_weight(*task_id, &quality_scores)
+            }));
+        }
+        fused_output.insert("contributors".to_string(), serde_json::json!(contributors));
+        
+        // Add fused content
+        for (key, value) in fused_result {
+            fused_output.insert(key, value);
+        }
+        
+        // Add output types present
+        let output_types: Vec<String> = categorized_outputs.keys()
+            .map(|t| format!("{:?}", t))
+            .collect();
+        fused_output.insert("output_types".to_string(), serde_json::json!(output_types));
+        
+        // Add generation timestamp
+        fused_output.insert(
+            "generated_at".to_string(), 
+            serde_json::json!(chrono::Utc::now().to_rfc3339())
+        );
+        
+        // Add fusion metrics
+        fused_output.insert("fusion_metrics".to_string(), serde_json::json!({
+            "sources_count": task_results.len(),
+            "fusion_method": "advanced_multi_type",
+            "average_quality": quality_scores.values().sum::<f64>() / quality_scores.len() as f64
+        }));
+        
+        log::info!("Advanced response fusion completed successfully");
+        serde_json::Value::Object(fused_output)
+    }
+    
+    /// Detect the primary type of an agent output
+    fn detect_output_type(&self, output: &AgentOutput) -> OutputType {
+        // Check for code snippets
+        if output.has_field("code_snippets") || output.has_field("code") {
+            return OutputType::Code;
+        }
+        
+        // Check for metrics or numerical data
+        if output.has_field("metrics") || output.has_field("statistics") || output.has_field("performance") {
+            return OutputType::Numerical;
+        }
+        
+        // Check for embeddings or vectors
+        if output.has_field("embedding") || output.has_field("vector") || output.has_field("embeddings") {
+            return OutputType::Embedding;
+        }
+        
+        // Check for structured data
+        if output.raw_value().map(|v| v.is_object()).unwrap_or(false) && 
+           (output.has_field("data") || output.has_field("results") || output.has_field("items")) {
+            return OutputType::StructuredData;
+        }
+        
+        // Check for security findings
+        if output.has_field("vulnerabilities") || output.has_field("security_issues") ||
+           output.has_field("findings") {
+            return OutputType::SecurityAnalysis;
+        }
+        
+        // Check for test results
+        if output.has_field("tests") || output.has_field("test_results") || output.has_field("coverage") {
+            return OutputType::TestResults;
+        }
+        
+        // Default to text for anything else
+        OutputType::Text
+    }
+    
+    /// Assess the quality of an agent output (returns score between 0.0 and 1.0)
+    fn assess_output_quality(&self, output: &AgentOutput) -> f64 {
+        // Start with default quality
+        let mut quality_score = 0.5;
+        
+        // If agent reported quality metrics, use those
+        if let Ok(quality) = output.get_field::<f64>("quality_score") {
+            return quality.clamp(0.0, 1.0);
+        }
+        
+        // If execution metrics are available, factor those in
+        if let Ok(metrics) = output.get_field::<ExecutionMetrics>("execution_metrics") {
+            quality_score += 0.1 * metrics.success_rate;
+            
+            // Penalize for very long execution times (indicates complexity or inefficiency)
+            if metrics.execution_time_ms > 5000 {
+                quality_score -= 0.05;
+            }
+        }
+        
+        // Adjust for output comprehensiveness
+        if let Ok(metadata) = output.get_field::<OutputMetadata>("metadata") {
+            // Bonus for outputs with more context/content
+            if metadata.context_tokens > 1000 {
+                quality_score += 0.1;
+            }
+            
+            // Bonus for higher confidence outputs
+            if metadata.confidence_score > 0.8 {
+                quality_score += 0.1;
+            }
+            
+            // Penalty for low confidence
+            if metadata.confidence_score < 0.5 {
+                quality_score -= 0.1;
+            }
+        }
+        
+        // Adjust for output completeness
+        if output.has_field("is_partial") || output.has_field("is_incomplete") {
+            quality_score -= 0.2;
+        }
+        
+        // Check for error indicators
+        if output.has_field("error") || output.has_field("errors") {
+            quality_score -= 0.3;
+        }
+        
+        // Return normalized score
+        quality_score.clamp(0.0, 1.0)
+    }
+    
+    /// Summarize multiple text outputs into a coherent combined output
+    fn summarize_text_outputs(&self, texts: &[&String]) -> String {
+        if texts.is_empty() {
+            return String::new();
+        }
+        
+        if texts.len() == 1 {
+            return texts[0].clone();
+        }
+        
+        // For multiple texts, create a summary that combines key points
+        let mut key_sentences = Vec::new();
+        let mut seen_sentences = std::collections::HashSet::new();
+        
+        // Extract important sentences from each text (simplified approach)
+        for text in texts {
+            for sentence in text.split(|c| c == '.' || c == '!' || c == '?') {
+                let trimmed = sentence.trim();
+                if trimmed.len() > 20 && !seen_sentences.contains(trimmed) {
+                    seen_sentences.insert(trimmed.to_string());
+                    key_sentences.push(trimmed.to_string());
+                    
+                    // Limit to reasonable number of sentences
+                    if key_sentences.len() >= 10 {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Combine key sentences into a summary
+        let summary = key_sentences.join(". ");
+        if summary.is_empty() {
+            // Fallback if sentence extraction failed
+            return texts.iter().take(2).map(|s| s.as_str()).collect::<Vec<_>>().join("\n\n");
+        }
+        
+        summary + "."
+    }
+    
+    /// Calculate agreement level between different text outputs
+    fn calculate_text_agreement(&self, text_outputs: &HashMap<String, String>) -> f64 {
+        if text_outputs.len() <= 1 {
+            return 1.0; // Perfect agreement with only one output
+        }
+        
+        // Calculate pairwise similarities and average them
+        let mut total_similarity = 0.0;
+        let mut pair_count = 0;
+        let texts: Vec<&String> = text_outputs.values().collect();
+        
+        for i in 0..texts.len() {
+            for j in (i+1)..texts.len() {
+                total_similarity += self.calculate_semantic_similarity(texts[i], texts[j]);
+                pair_count += 1;
+            }
+        }
+        
+        if pair_count == 0 {
+            return 0.5; // No comparison made
+        }
+        
+        // Calculate averages
+        total_similarity / pair_count as f64
+    }
+    
+    /// Advanced semantic similarity comparison between texts
+    fn calculate_semantic_similarity(&self, text1: &str, text2: &str) -> f64 {
+        // Convert to lowercase for comparison
+        let text1_lower = text1.to_lowercase();
+        let text2_lower = text2.to_lowercase();
+        
+        // Extract words, filtering out very short ones
+        let words1: std::collections::HashSet<&str> = text1_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .collect();
+        
+        let words2: std::collections::HashSet<&str> = text2_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .collect();
+        
+        if words1.is_empty() || words2.is_empty() {
+            return 0.5; // No meaningful comparison
+        }
+        
+        // Calculate Jaccard similarity
+        let intersection_size = words1.intersection(&words2).count();
+        let union_size = words1.union(&words2).count();
+        if union_size == 0 {
+            return 0.0;
+        }
+        
+        intersection_size as f64 / union_size as f64
+    }
+    
+    /// Group semantically similar texts
+    fn group_similar_texts(&self, texts: &[(&String, &String)], threshold: f64) -> Vec<Vec<(&String, &String)>> {
+        let mut groups: Vec<Vec<(&String, &String)>> = Vec::new();
+        
+        for (id, text) in texts {
+            let mut added = false;
+            
+            // Try to find an existing group with similar text
+            for group in &mut groups {
+                if let Some((_, representative_text)) = group.first() {
+                    let similarity = self.calculate_semantic_similarity(text, representative_text);
+                    if similarity >= threshold {
+                        group.push((id, text));
+                        added = true;
+                        break;
+                    }
+                }
+            }
+            
+            // If no similar group found, create a new one
+            if !added {
+                groups.push(vec![(id, text)]);
+            }
+        }
+        
+        groups
+    }
+    
+    /// Custom fusion for grouped similar texts
+    fn fuse_similar_texts(&self, group: &[(&String, &String)]) -> String {
+        if group.is_empty() {
+            return String::new();
+        }
+        
+        if group.len() == 1 {
+            return group[0].1.clone();
+        }
+        
+        // For multiple similar texts, extract key information
+        let mut key_points = Vec::new();
+        let mut seen_points = std::collections::HashSet::new();
+        
+        // Find points that appear in multiple texts (higher confidence)
+        for (_, text) in group {
+            // Split into sentences or bullet points
+            for point in text.split(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+                let trimmed = point.trim();
+                if trimmed.len() > 15 {
+                    if !seen_points.contains(trimmed) {
+                        seen_points.insert(trimmed.to_string());
+                        key_points.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        
+        // Return combined key points
+        if key_points.is_empty() {
+            return group[0].1.clone(); // Fallback to first text
+        }
+        
+        key_points.join(". ") + "."
+    }
+    
+    /// Process security analysis outputs with specialized fusion
+    fn fuse_security_outputs(&self, security_outputs: &[&AgentOutput]) -> serde_json::Value {
+        let mut all_vulnerabilities = Vec::new();
+        let mut severity_counts = HashMap::new();
+        let mut seen_vulns = std::collections::HashSet::new();
+        
+        // Collect all vulnerabilities from all outputs
+        for output in security_outputs {
+            if let Ok(vulns) = output.get_field::<Vec<serde_json::Value>>("vulnerabilities") {
+                for vuln in vulns {
+                    // Generate a unique identifier for this vulnerability
+                    let vuln_id = if let Some(id) = vuln.get("id").and_then(|i| i.as_str()) {
+                        id.to_string()
+                    } else if let Some(name) = vuln.get("name").and_then(|n| n.as_str()) {
+                        name.to_string()
+                    } else {
+                        continue; // Skip vulnerabilities without identifiers
+                    };
+                    
+                    // Add unique vulnerabilities only
+                    if !seen_vulns.contains(&vuln_id) {
+                        seen_vulns.insert(vuln_id);
+                        all_vulnerabilities.push(vuln.clone());
+                        
+                        // Update severity counts
+                        if let Some(severity) = vuln.get("severity").and_then(|s| s.as_str()) {
+                            *severity_counts.entry(severity.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Sort vulnerabilities by severity
+        all_vulnerabilities.sort_by(|a, b| {
+            let a_severity = a.get("severity").and_then(|s| s.as_str()).unwrap_or("low");
+            let b_severity = b.get("severity").and_then(|s| s.as_str()).unwrap_or("low");
+            
+            // Custom severity ordering
+            let severity_value = |s: &str| match s.to_lowercase().as_str() {
+                "critical" => 4,
+                "high" => 3,
+                "medium" => 2,
+                "low" => 1,
+                _ => 0,
+            };
+            
+            severity_value(b_severity).cmp(&severity_value(a_severity))
+        });
+        
+        serde_json::json!({
+            "vulnerabilities": all_vulnerabilities,
+            "total_count": all_vulnerabilities.len(),
+            "severity_counts": severity_counts,
+            "sources_count": security_outputs.len()
+        })
     }
 }
