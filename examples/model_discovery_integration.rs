@@ -30,8 +30,15 @@ async fn main() -> Result<()> {
     info!("Starting Model Discovery System Integration Example");
 
     // 1. Set up database connection
-    let database_url = "sqlite:test_data/model_discovery.db";
-    let main_db = Database::new(database_url).await?;
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite:test_data/model_discovery.db".to_string());
+    
+    // Ensure test_data directory exists
+    if let Some(parent) = std::path::Path::new(&database_url.replace("sqlite:", "")).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    
+    let main_db = Database::new(&database_url).await?;
     let model_db = ModelDatabase::new(main_db.pool.clone());
     
     // Initialize model discovery tables
@@ -40,14 +47,54 @@ async fn main() -> Result<()> {
     // 2. Create model discovery service with database
     let mut discovery_service = ModelDiscoveryService::with_database(model_db.clone());
     
-    // 3. Add Ollama provider
-    let ollama_provider = OllamaModelProvider::new("http://127.0.0.1:11434".to_string())?;
+    // 3. Add Ollama provider with environment-configurable URL
+    let ollama_url = std::env::var("OLLAMA_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+    
+    info!("Connecting to Ollama at: {}", ollama_url);
+    let ollama_provider = match OllamaModelProvider::new(ollama_url.clone()) {
+        Ok(provider) => provider,
+        Err(e) => {
+            eprintln!("❌ Failed to create Ollama provider: {}", e);
+            eprintln!("💡 Make sure Ollama is running at {}", ollama_url);
+            eprintln!("   You can start it with: ollama serve");
+            eprintln!("   And install models with: ollama pull llama3.2:3b");
+            return Ok(());
+        }
+    };
     discovery_service.add_provider(Box::new(ollama_provider));
     
     // 4. Run initial discovery
     info!("Running initial model discovery...");
-    let discovered_models = discovery_service.discover_all_models().await?;
-    info!("Discovered {} models", discovered_models.len());
+    let discovered_models = match discovery_service.discover_all_models().await {
+        Ok(models) => models,
+        Err(e) => {
+            eprintln!("❌ Model discovery failed: {}", e);
+            eprintln!("💡 This might happen if:");
+            eprintln!("   - Ollama is not running");
+            eprintln!("   - No models are installed in Ollama");
+            eprintln!("   - Connection to Ollama failed");
+            eprintln!("");
+            eprintln!("🔧 To fix this:");
+            eprintln!("   1. Start Ollama: ollama serve");
+            eprintln!("   2. Install a model: ollama pull llama3.2:3b");
+            eprintln!("   3. Verify: ollama list");
+            return Ok(());
+        }
+    };
+    
+    if discovered_models.is_empty() {
+        eprintln!("⚠️  No models were discovered!");
+        eprintln!("💡 Install some models first:");
+        eprintln!("   ollama pull llama3.2:3b");
+        eprintln!("   ollama pull deepseek-coder:6.7b");
+        eprintln!("   ollama pull gemma2:9b");
+        eprintln!("");
+        eprintln!("🔧 Then run this example again");
+        return Ok(());
+    }
+    
+    info!("✅ Discovered {} models", discovered_models.len());
     
     // Display discovered models
     for model in &discovered_models {
