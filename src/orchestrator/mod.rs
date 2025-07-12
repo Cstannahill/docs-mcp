@@ -45,6 +45,14 @@ impl FlowOrchestrator {
         }
     }
     
+    /// Create a new orchestrator with dynamic model discovery
+    pub async fn new_with_discovery(
+        agent_registry: Arc<crate::agents::AgentRegistry>,
+    ) -> Result<Self> {
+        let model_router = crate::orchestrator::model_router::ModelRouter::new_with_discovery().await?;
+        Ok(Self::new(agent_registry, model_router))
+    }
+    
     /// Register a model client for use in task execution
     pub fn register_model_client(&self, model_name: String, client: Arc<dyn crate::model_clients::ModelClient>) {
         self.execution_engine.lock().unwrap().register_model_client(model_name, client);

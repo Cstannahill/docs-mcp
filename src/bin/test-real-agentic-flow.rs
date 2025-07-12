@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     
     // Test model availability
     println!("🔍 Checking model availability...");
-    match ollama_client.is_model_available().await {
+    match ollama_client.is_model_available("codellama:7b").await {
         Ok(true) => println!("✅ codellama:7b is available"),
         Ok(false) => {
             println!("⚠️  Model not available, attempting to ensure availability...");
@@ -70,13 +70,16 @@ async fn main() -> Result<()> {
     
     println!("✅ Registered agents: {:?}", agent_registry.list_agents());
     
-    // Step 3: Set up model router and orchestrator
-    println!("🎛️  Setting up orchestrator...");
-    let model_router = ModelRouter::new();
-    let orchestrator = FlowOrchestrator::new(agent_registry.clone(), model_router);
+    // Step 3: Set up orchestrator with dynamic model discovery
+    println!("🎛️  Setting up orchestrator with model discovery...");
+    let orchestrator = FlowOrchestrator::new_with_discovery(agent_registry.clone()).await?;
     
-    // Register the Ollama client
-    orchestrator.register_model_client("codellama:7b".to_string(), Arc::new(ollama_client));
+    // Register the Ollama client for all discovered models
+    let client_arc = Arc::new(ollama_client);
+    orchestrator.register_model_client("codellama:7b".to_string(), client_arc.clone());
+    orchestrator.register_model_client("deepseek-coder:6.7b".to_string(), client_arc.clone());
+    orchestrator.register_model_client("gemma2:9b".to_string(), client_arc.clone());
+    // The orchestrator will discover and register other models automatically
     
     // Step 4: Create a test request for code analysis
     println!("📝 Creating test request...");

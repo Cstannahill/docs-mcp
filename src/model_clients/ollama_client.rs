@@ -7,6 +7,19 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[derive(Deserialize, Serialize, Debug)]
+pub struct OllamaModelInfo {
+    pub name: String,
+    pub modified_at: String,
+    pub size: u64,
+    pub digest: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct OllamaListResponse {
+    pub models: Vec<OllamaModelInfo>,
+}
+
 /// Client for interacting with Ollama API
 pub struct OllamaClient {
     base_url: String,
@@ -42,30 +55,38 @@ impl OllamaClient {
         self
     }
     
-    /// Check if a model is available in Ollama
-    pub async fn is_model_available(&self) -> Result<bool> {
+    /// List all available models from Ollama
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}/api/tags", self.base_url);
+        
         let response = self.client
-            .get(&format!("{}/api/tags", self.base_url))
-            .timeout(Duration::from_secs(10))
+            .get(&url)
+            .timeout(self.timeout)
             .send()
             .await
-            .context("Failed to connect to Ollama API")?;
-            
+            .context("Failed to send request to Ollama")?;
+
         if !response.status().is_success() {
-            return Ok(false);
+            anyhow::bail!("Ollama API error: {}", response.status());
         }
-        
-        let tags_response: OllamaTagsResponse = response
+
+        let list_response: OllamaListResponse = response
             .json()
             .await
-            .context("Failed to parse Ollama tags response")?;
-            
-        Ok(tags_response.models.iter().any(|model| model.name == self.model_name))
+            .context("Failed to parse Ollama list response")?;
+
+        Ok(list_response.models.into_iter().map(|m| m.name).collect())
     }
-    
+
+    /// Check if a specific model is available
+    pub async fn is_model_available(&self, model_name: &str) -> Result<bool> {
+        let available_models = self.list_models().await?;
+        Ok(available_models.iter().any(|m| m == model_name))
+    }
+
     /// Pull a model if it's not available
     pub async fn ensure_model_available(&self) -> Result<()> {
-        if self.is_model_available().await? {
+        if self.is_model_available(&self.model_name).await? {
             log::debug!("Model {} is already available", self.model_name);
             return Ok(());
         }

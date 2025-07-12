@@ -1,4 +1,3 @@
-
 // src/orchestrator/model_router.rs
 //! Intelligent Model Router for Agentic Workflows
 //! 
@@ -11,10 +10,12 @@
 
 use crate::agents::{ModelCapability, TaskPriority};
 use crate::orchestrator::{AgentAssignment, ModelAssignment, ModelSelection};
+use crate::model_clients::ollama_client::OllamaClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use anyhow::Result;
 use tokio::time::Instant;
+use tracing::{debug, error, info, warn};
 
 /// Advanced model router with intelligent selection capabilities
 pub struct ModelRouter {
@@ -33,6 +34,93 @@ impl ModelRouter {
             cost_optimizer: CostOptimizer::new(),
             load_balancer: LoadBalancer::new(),
             routing_strategy: RoutingStrategy::default(),
+        }
+    }
+    
+    /// Initialize with dynamic discovery of available models
+    pub async fn new_with_discovery() -> Result<Self> {
+        let mut router = Self::new();
+        router.discover_and_register_models().await?;
+        Ok(router)
+    }
+    
+    /// Discover available models from Ollama and register them
+    pub async fn discover_and_register_models(&mut self) -> Result<()> {
+        let client = OllamaClient::new("http://127.0.0.1:11434", "dummy")?;
+        let available_models = client.list_models().await.map_err(|e| {
+            error!("Failed to discover models from Ollama: {}", e);
+            e
+        })?;
+        
+        info!("Discovered {} models from Ollama: {:?}", available_models.len(), available_models);
+        
+        for model_name in available_models {
+            let model_info = self.create_model_info_for(&model_name);
+            self.model_registry.add_model(model_info);
+            debug!("Registered model: {}", model_name);
+        }
+        
+        Ok(())
+    }
+    
+    /// Create ModelInfo based on model name heuristics
+    fn create_model_info_for(&self, model_name: &str) -> ModelInfo {
+        let name = model_name.to_string();
+        
+        // Determine capabilities based on model name patterns
+        let capabilities = if model_name.contains("coder") || model_name.contains("code") {
+            vec![
+                ModelCapability::CodeGeneration,
+                ModelCapability::CodeUnderstanding,
+                ModelCapability::Debugging,
+                ModelCapability::PerformanceAnalysis,
+                ModelCapability::Documentation,
+                ModelCapability::Explanation,
+            ]
+        } else if model_name.contains("gemma") {
+            vec![
+                ModelCapability::TextGeneration,
+                ModelCapability::Reasoning,
+                ModelCapability::PerformanceAnalysis,
+                ModelCapability::Documentation,
+                ModelCapability::Explanation,
+            ]
+        } else {
+            vec![
+                ModelCapability::TextGeneration,
+                ModelCapability::Reasoning,
+                ModelCapability::Documentation,
+                ModelCapability::Explanation,
+            ]
+        };
+        
+        // Estimate specs based on model name
+        let (tokens_per_second, max_context, quality_score) = if model_name.contains(":7b") || model_name.contains("7b") {
+            (45.0, 4096, 0.85)
+        } else if model_name.contains(":13b") || model_name.contains("13b") {
+            (25.0, 8192, 0.90)
+        } else if model_name.contains("6.7b") {
+            (50.0, 8192, 0.88)
+        } else {
+            (35.0, 4096, 0.80)
+        };
+        
+        let mut quality_metrics = HashMap::new();
+        quality_metrics.insert("overall".to_string(), quality_score);
+        if capabilities.contains(&ModelCapability::CodeGeneration) {
+            quality_metrics.insert("code_generation".to_string(), quality_score + 0.05);
+        }
+        
+        ModelInfo {
+            name,
+            capabilities,
+            average_latency_ms: (1000.0 / tokens_per_second * 10.0) as u64,
+            tokens_per_second,
+            cost_per_token: 0.0, // Local models are free
+            quality_metrics,
+            max_context_length: max_context,
+            available: true,
+            current_load: 0.1,
         }
     }
     
@@ -494,89 +582,13 @@ pub struct ModelRegistry {
 
 impl ModelRegistry {
     pub fn new() -> Self {
-        let mut models = HashMap::new();
-        
-        // Add some example models
-        models.insert("llama3.2:8b".to_string(), ModelInfo {
-            name: "llama3.2:8b".to_string(),
-            capabilities: vec![
-                ModelCapability::Explanation,
-                ModelCapability::Documentation,
-                ModelCapability::Translation,
-                ModelCapability::Reasoning,
-                ModelCapability::HighAccuracy,
-                ModelCapability::TextGeneration,
-                ModelCapability::PatternRecognition,
-            ],
-            average_latency_ms: 2000,
-            tokens_per_second: 50.0,
-            cost_per_token: 0.0001,
-            quality_metrics: {
-                let mut metrics = HashMap::new();
-                metrics.insert("overall".to_string(), 0.85);
-                metrics.insert("explanation".to_string(), 0.90);
-                metrics.insert("documentation".to_string(), 0.88);
-                metrics
-            },
-            max_context_length: 8192,
-            available: true,
-            current_load: 0.3,
-        });
-        
-        models.insert("codellama:13b".to_string(), ModelInfo {
-            name: "codellama:13b".to_string(),
-            capabilities: vec![
-                ModelCapability::CodeGeneration,
-                ModelCapability::CodeUnderstanding,
-                ModelCapability::Debugging,
-                ModelCapability::ExampleGeneration,
-                ModelCapability::PatternRecognition,
-                ModelCapability::SecurityAnalysis,
-                ModelCapability::Documentation,
-                ModelCapability::Explanation,
-            ],
-            average_latency_ms: 3000,
-            tokens_per_second: 40.0,
-            cost_per_token: 0.00015,
-            quality_metrics: {
-                let mut metrics = HashMap::new();
-                metrics.insert("overall".to_string(), 0.92);
-                metrics.insert("code_generation".to_string(), 0.95);
-                metrics.insert("debugging".to_string(), 0.90);
-                metrics
-            },
-            max_context_length: 16384,
-            available: true,
-            current_load: 0.5,
-        });
-        
-        models.insert("deepseek-coder:6.7b".to_string(), ModelInfo {
-            name: "deepseek-coder:6.7b".to_string(),
-            capabilities: vec![
-                ModelCapability::CodeGeneration,
-                ModelCapability::CodeUnderstanding,
-                ModelCapability::PerformanceAnalysis,
-                ModelCapability::PatternRecognition,
-                ModelCapability::Debugging,
-                ModelCapability::Documentation,
-                ModelCapability::Explanation,
-            ],
-            average_latency_ms: 1500,
-            tokens_per_second: 60.0,
-            cost_per_token: 0.00008,
-            quality_metrics: {
-                let mut metrics = HashMap::new();
-                metrics.insert("overall".to_string(), 0.88);
-                metrics.insert("performance_analysis".to_string(), 0.93);
-                metrics.insert("code_understanding".to_string(), 0.90);
-                metrics
-            },
-            max_context_length: 8192,
-            available: true,
-            current_load: 0.2,
-        });
-        
-        Self { models }
+        Self {
+            models: HashMap::new(),
+        }
+    }
+    
+    pub fn add_model(&mut self, model_info: ModelInfo) {
+        self.models.insert(model_info.name.clone(), model_info);
     }
     
     pub fn get_capable_models(&self, required_capabilities: &[ModelCapability]) -> Vec<ModelInfo> {
@@ -595,10 +607,6 @@ impl ModelRegistry {
         self.models.get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Model not found: {}", name))
-    }
-    
-    pub fn add_model(&mut self, model: ModelInfo) {
-        self.models.insert(model.name.clone(), model);
     }
     
     pub fn update_model_load(&mut self, model_name: &str, load: f64) -> Result<()> {
