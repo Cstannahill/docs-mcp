@@ -13,7 +13,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use anyhow::Result;
 
-pub mod code_analyzer;
+// TODO: Update code analyzer to new Agent trait
+// pub mod code_analyzer;
+pub mod context_manager;
+pub mod coordinator;
+pub mod model_selector;
 // TODO: Implement additional agents
 // pub mod doc_generator;
 // pub mod test_generator; 
@@ -29,39 +33,17 @@ pub trait Agent: Send + Sync {
     /// Unique identifier for this agent
     fn name(&self) -> &'static str;
     
+    /// Human-readable description of what this agent does
+    fn description(&self) -> &'static str;
+    
     /// What capabilities this agent provides
     fn capabilities(&self) -> Vec<AgentCapability>;
     
-    /// JSON schema for expected input
-    fn input_schema(&self) -> serde_json::Value;
-    
-    /// JSON schema for output format
-    fn output_schema(&self) -> serde_json::Value;
-    
     /// Execute the agent's core functionality
-    async fn execute(
-        &self,
-        input: AgentInput,
-        context: &FlowContext,
-        model_client: Arc<dyn ModelClient>,
-    ) -> Result<AgentOutput>;
+    async fn execute(&self, context: &mut FlowContext) -> Result<serde_json::Value>;
     
-    /// What model capabilities are required for this agent
-    fn required_model_capabilities(&self) -> Vec<ModelCapability>;
-    
-    /// Estimate token usage for cost calculation
-    fn estimated_tokens(&self, input: &AgentInput) -> usize;
-    
-    /// Validate input before execution
-    fn validate_input(&self, input: &AgentInput) -> Result<()> {
-        // Default implementation - agents can override for custom validation
-        Ok(())
-    }
-    
-    /// Agent-specific configuration
-    fn default_config(&self) -> AgentConfig {
-        AgentConfig::default()
-    }
+    /// Check if this agent can handle the given context
+    async fn can_handle(&self, context: &FlowContext) -> bool;
 }
 
 /// Categories of capabilities an agent can provide
@@ -83,6 +65,15 @@ pub enum AgentCapability {
     ErrorDiagnosis,
     RefactoringAssistance,
     DataAnalysis,
+    // New capabilities for our enhanced agents
+    ContextManagement,
+    ConversationHistory,
+    SemanticAnalysis,
+    TaskCoordination,
+    LoadBalancing,
+    HealthMonitoring,
+    ModelSelection,
+    CostOptimization,
 }
 
 /// Model capabilities that agents can require
@@ -376,42 +367,53 @@ impl Default for AgentConfig {
 }
 
 /// Context shared across all agents in a flow
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowContext {
     pub flow_id: String,
+    pub session_id: String,
+    pub task_id: Option<uuid::Uuid>,
     pub start_time: chrono::DateTime<chrono::Utc>,
-    pub intermediate_results: HashMap<String, AgentOutput>,
-    pub global_context: HashMap<String, serde_json::Value>,
+    pub intermediate_results: HashMap<String, serde_json::Value>,
+    pub metadata: HashMap<String, serde_json::Value>,
     pub user_context: Option<UserContext>,
     pub project_context: Option<ProjectContext>,
+    pub capabilities_required: Vec<AgentCapability>,
 }
 
 impl FlowContext {
     pub fn new(flow_id: String) -> Self {
         Self {
             flow_id,
+            session_id: "default".to_string(),
+            task_id: None,
             start_time: chrono::Utc::now(),
             intermediate_results: HashMap::new(),
-            global_context: HashMap::new(),
+            metadata: HashMap::new(),
             user_context: None,
             project_context: None,
+            capabilities_required: Vec::new(),
         }
     }
     
-    pub fn add_result(&mut self, task_id: &str, result: &AgentOutput) {
-        self.intermediate_results.insert(task_id.to_string(), result.clone());
+    pub fn with_session_id(mut self, session_id: String) -> Self {
+        self.session_id = session_id;
+        self
     }
     
-    pub fn get_result(&self, task_id: &str) -> Option<&AgentOutput> {
+    pub fn add_result(&mut self, task_id: &str, result: serde_json::Value) {
+        self.intermediate_results.insert(task_id.to_string(), result);
+    }
+    
+    pub fn get_result(&self, task_id: &str) -> Option<&serde_json::Value> {
         self.intermediate_results.get(task_id)
     }
     
     pub fn add_global_context<T: Serialize>(&mut self, key: &str, value: T) {
-        self.global_context.insert(key.to_string(), serde_json::to_value(value).unwrap());
+        self.metadata.insert(key.to_string(), serde_json::to_value(value).unwrap());
     }
     
     pub fn get_global_context<T: for<'a> Deserialize<'a>>(&self, key: &str) -> Option<T> {
-        self.global_context.get(key)
+        self.metadata.get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
     

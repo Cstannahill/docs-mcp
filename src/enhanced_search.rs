@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::database::{Database, UserContext, DifficultyLevel, InteractionType, SearchAnalytics};
@@ -95,6 +96,11 @@ impl EnhancedSearchSystem {
             ranking_engine,
             learning_engine,
         })
+    }
+
+    /// Get the embedding service for use by other components
+    pub fn embedding_generator(&self) -> Arc<EmbeddingService> {
+        Arc::new(self.embedding_service.clone())
     }
 
     /// Enhanced search with AI-powered ranking and semantic understanding

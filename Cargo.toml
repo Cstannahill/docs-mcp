@@ -51,7 +51,7 @@ html-escape = "0.2"
 
 # Agentic flow architecture dependencies
 async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["serde", "v4"] }
 tree-sitter = "0.20"
 tree-sitter-rust = "0.20"
 tree-sitter-python = "0.20"
@@ -69,6 +69,7 @@ dirs = "5.0"
 # HTTP server for direct access
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors", "fs"] }
+tokio-util = "0.7.15"
 
 [dev-dependencies]
 tempfile = "3.8"

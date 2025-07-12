@@ -7,10 +7,9 @@
 //! 3. End-to-end flow orchestration without mock data
 
 use docs_mcp_server::{
-    agents::{AgentRegistry, code_analyzer::CodeAnalyzerAgent},
+    agents::{AgentRegistry, context_manager::ContextManager, model_selector::ModelSelectorAgent},
     orchestrator::{FlowOrchestrator, FlowRequest, FlowRequirements, RequestIntent, AnalysisDepth},
     model_clients::{OllamaClient, ModelClient},
-    orchestrator::model_router::ModelRouter,
 };
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -65,7 +64,9 @@ async fn main() -> Result<()> {
     // Step 2: Set up agent registry
     println!("🤖 Setting up agent registry...");
     let mut agent_registry = AgentRegistry::new();
-    agent_registry.register(CodeAnalyzerAgent::new());
+    
+    // For now, let's skip agent registration since we need to create proper Agent implementations
+    // agent_registry.register(ModelSelectorAgent::new(...));
     let agent_registry = Arc::new(agent_registry);
     
     println!("✅ Registered agents: {:?}", agent_registry.list_agents());

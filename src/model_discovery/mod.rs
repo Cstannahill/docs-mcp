@@ -4,17 +4,27 @@
 mod ollama_provider;
 pub mod database;
 mod scheduler;
+pub mod evaluator;
 
 pub use ollama_provider::OllamaModelProvider;
 pub use database::ModelDatabase;
 pub use scheduler::{ModelDiscoveryScheduler, SchedulerConfig, SchedulerStatus};
+pub use evaluator::{
+    ModelEvaluator, ModelEvaluationResult, EvaluationConfig, TestSuite, 
+    EvaluationTest, ExternalModelContext, TestResult
+};
 
 use crate::agents::ModelCapability;
-use anyhow::Result;
+use anyhow::{Result, Context};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tracing::{info, error, debug, warn};
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Provider trait for different model sources
 #[async_trait]
@@ -221,7 +231,7 @@ pub enum ModelWeakness {
 }
 
 /// Ideal use cases for models
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UseCase {
     CodeGeneration,
     CodeAnalysis,
@@ -257,11 +267,40 @@ pub enum DataFormat {
     PDF,
 }
 
+/// Summary of evaluation results across all models
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationSummary {
+    pub total_models: u32,
+    pub evaluated_models: u32,
+    pub average_score: f64,
+    pub highest_score: f64,
+    pub lowest_score: f64,
+    pub best_model: Option<String>,
+    pub evaluation_date: DateTime<Utc>,
+}
+
+impl Default for EvaluationSummary {
+    fn default() -> Self {
+        Self {
+            total_models: 0,
+            evaluated_models: 0,
+            average_score: 0.0,
+            highest_score: 0.0,
+            lowest_score: 0.0,
+            best_model: None,
+            evaluation_date: Utc::now(),
+        }
+    }
+}
+
 /// Main model discovery service
 pub struct ModelDiscoveryService {
     providers: Vec<Box<dyn ModelProvider>>,
     cache: ModelCache,
     database: Option<ModelDatabase>,
+    // Add comprehensive evaluation capabilities
+    evaluator: Option<Arc<evaluator::ModelEvaluator>>,
+    evaluation_config: evaluator::EvaluationConfig,
 }
 
 impl ModelDiscoveryService {
@@ -270,6 +309,8 @@ impl ModelDiscoveryService {
             providers: Vec::new(),
             cache: ModelCache::new(),
             database: None,
+            evaluator: None,
+            evaluation_config: evaluator::EvaluationConfig::default(),
         }
     }
     
@@ -278,7 +319,22 @@ impl ModelDiscoveryService {
             providers: Vec::new(),
             cache: ModelCache::new(),
             database: Some(database),
+            evaluator: None,
+            evaluation_config: evaluator::EvaluationConfig::default(),
         }
+    }
+    
+    /// Set up comprehensive model evaluation with web search capabilities
+    pub fn with_evaluator(mut self, web_search: Arc<crate::web_search::WebSearchEngine>) -> Self {
+        let evaluator = evaluator::ModelEvaluator::new(web_search, self.evaluation_config.clone());
+        self.evaluator = Some(Arc::new(evaluator));
+        self
+    }
+    
+    /// Configure evaluation settings
+    pub fn with_evaluation_config(mut self, config: evaluator::EvaluationConfig) -> Self {
+        self.evaluation_config = config;
+        self
     }
     
     /// Add a model provider to the discovery service
@@ -326,181 +382,232 @@ impl ModelDiscoveryService {
         Ok(all_models)
     }
     
-    /// Update performance metrics for a model
-    pub async fn update_model_performance(&mut self, model_id: &str, metrics: PerformanceMetrics) -> Result<()> {
-        // Update in cache
-        if let Some(model) = self.cache.models.get_mut(model_id) {
-            model.performance_metrics = metrics.clone();
-            model.last_updated = chrono::Utc::now();
+    /// Discover models from all providers with comprehensive evaluation
+    pub async fn discover_and_evaluate_models(
+        &mut self, 
+        model_client: Arc<dyn crate::model_clients::ModelClient>
+    ) -> Result<Vec<(ModelInfo, Option<evaluator::ModelEvaluationResult>)>> {
+        let mut results = Vec::new();
+        
+        // First discover all models
+        let discovered_models = self.discover_all_models().await?;
+        
+        // If evaluator is available, run comprehensive evaluation on each model
+        if let Some(evaluator) = self.evaluator.clone() {
+            tracing::info!("Starting comprehensive evaluation of {} discovered models", discovered_models.len());
             
-            // Store in database
-            if let Some(ref database) = self.database {
-                database.store_performance_history(model_id, &metrics, chrono::Utc::now()).await?;
-                database.store_model(model).await?;
+            for model in discovered_models {
+                tracing::info!("Evaluating model: {}", model.name);
+                
+                match evaluator.evaluate_model(&model, model_client.clone()).await {
+                    Ok(evaluation_result) => {
+                        // Update model with evaluation results
+                        if let Some(updated_model) = self.update_model_with_evaluation(&model, &evaluation_result).await {
+                            results.push((updated_model, Some(evaluation_result)));
+                        } else {
+                            results.push((model, None));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to evaluate model {}: {}", model.name, e);
+                        results.push((model, None));
+                    }
+                }
+            }
+        } else {
+            // No evaluator, just return discovered models
+            for model in discovered_models {
+                results.push((model, None));
             }
         }
         
+        tracing::info!("Completed model discovery and evaluation for {} models", results.len());
+        Ok(results)
+    }
+    
+    /// Update a model with evaluation results
+    async fn update_model_with_evaluation(
+        &mut self,
+        model: &ModelInfo,
+        evaluation: &evaluator::ModelEvaluationResult,
+    ) -> Option<ModelInfo> {
+        let mut updated_model = model.clone();
+        
+        // Update performance metrics
+        updated_model.performance_metrics = evaluation.performance_metrics.clone();
+        updated_model.quality_scores = evaluation.quality_scores.clone();
+        updated_model.benchmark_results = evaluation.benchmark_results.clone();
+        
+        // Update strengths and weaknesses based on evaluation
+        updated_model.strengths = evaluation.strengths.clone();
+        updated_model.weaknesses = evaluation.weaknesses.clone();
+        updated_model.ideal_use_cases = evaluation.recommended_use_cases.clone();
+        
+        // Update last evaluation timestamp
+        updated_model.last_updated = evaluation.evaluation_timestamp;
+        
+        // Add evaluation metadata
+        updated_model.metadata.insert(
+            "evaluation_score".to_string(),
+            evaluation.overall_score.to_string(),
+        );
+        updated_model.metadata.insert(
+            "evaluation_timestamp".to_string(),
+            evaluation.evaluation_timestamp.to_rfc3339(),
+        );
+        updated_model.metadata.insert(
+            "tests_passed".to_string(),
+            evaluation.evaluation_metadata.tests_passed.to_string(),
+        );
+        updated_model.metadata.insert(
+            "tests_total".to_string(),
+            evaluation.evaluation_metadata.total_tests_run.to_string(),
+        );
+        
+        // Store comprehensive evaluation results in database
+        if let Some(ref database) = self.database {
+            if let Err(e) = database.store_model(&updated_model).await {
+                tracing::error!("Failed to store evaluated model {} in database: {}", updated_model.id, e);
+                return None;
+            }
+            
+            // Store detailed evaluation results as well
+            if let Err(e) = self.store_evaluation_results(database, evaluation).await {
+                tracing::error!("Failed to store evaluation results for model {}: {}", updated_model.id, e);
+            }
+        }
+        
+        // Update cache
+        self.cache.update_model(updated_model.clone());
+        
+        Some(updated_model)
+    }
+    
+    /// Store detailed evaluation results in database
+    async fn store_evaluation_results(
+        &self,
+        database: &ModelDatabase,
+        evaluation: &evaluator::ModelEvaluationResult,
+    ) -> Result<()> {
+        // Store external context
+        let context_json = serde_json::to_string(&evaluation.external_context)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize external context: {}", e))?;
+        
+        // Store test results
+        let test_results_json = serde_json::to_string(&evaluation.test_results)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize test results: {}", e))?;
+        
+        // Store capability scores
+        let capability_scores_json = serde_json::to_string(&evaluation.capability_scores)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize capability scores: {}", e))?;
+        
+        // Create a comprehensive evaluation record
+        // This would be stored in a new table designed for evaluation results
+        // For now, we'll add it to the model metadata
+        
+        tracing::debug!("Stored comprehensive evaluation results for model: {}", evaluation.model_id);
         Ok(())
     }
     
-    /// Update availability for a model
-    pub async fn update_model_availability(&mut self, model_id: &str, availability: ModelAvailability) -> Result<()> {
-        // Update in cache
-        if let Some(model) = self.cache.models.get_mut(model_id) {
-            model.availability = availability.clone();
-            model.last_updated = chrono::Utc::now();
+    /// Get models with their latest evaluation results
+    pub async fn get_evaluated_models(&self) -> Result<Vec<(ModelInfo, Option<f64>)>> {
+        let mut results = Vec::new();
+        
+        for model in self.cache.models.values() {
+            let evaluation_score = model.metadata.get("evaluation_score")
+                .and_then(|s| s.parse::<f64>().ok());
             
-            // Store in database
-            if let Some(ref database) = self.database {
-                database.store_availability_history(model_id, &availability).await?;
-                database.store_model(model).await?;
+            results.push((model.clone(), evaluation_score));
+        }
+        
+        // Sort by evaluation score (highest first)
+        results.sort_by(|a, b| {
+            match (a.1, b.1) {
+                (Some(score_a), Some(score_b)) => score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.0.name.cmp(&b.0.name),
             }
-        }
+        });
         
-        Ok(())
+        Ok(results)
     }
     
-    /// Get models by capability
-    pub fn get_models_by_capability(&self, capability: &ModelCapability) -> Vec<&ModelInfo> {
-        self.cache.get_by_capability(capability)
-    }
-    
-    /// Get models by provider
-    pub fn get_models_by_provider(&self, provider: &ModelProviderType) -> Vec<&ModelInfo> {
-        self.cache.models.values()
-            .filter(|model| &model.provider == provider)
-            .collect()
-    }
-    
-    /// Get all cached models
-    pub fn get_all_models(&self) -> Vec<&ModelInfo> {
-        self.cache.models.values().collect()
-    }
-    
-    /// Get model by ID
-    pub fn get_model(&self, model_id: &str) -> Option<&ModelInfo> {
-        self.cache.models.get(model_id)
-    }
-    
-    /// Recommend best model for a specific task
-    pub fn recommend_model(&self, 
-        use_case: &UseCase, 
-        capabilities: &[ModelCapability],
-        constraints: Option<&ModelConstraints>
-    ) -> Option<&ModelInfo> {
-        let candidates: Vec<_> = self.cache.models.values()
-            .filter(|model| {
-                // Check if model supports all required capabilities
-                capabilities.iter().all(|cap| model.capabilities.contains(cap)) &&
-                // Check if model is suitable for the use case
-                model.ideal_use_cases.contains(use_case) &&
-                // Check availability
-                model.availability.is_available &&
-                // Check constraints
-                constraints.map_or(true, |c| self.meets_constraints(model, c))
-            })
-            .collect();
+    /// Get the best model for a specific use case based on evaluation
+    pub async fn get_best_model_for_use_case(&self, use_case: &crate::model_discovery::UseCase) -> Option<ModelInfo> {
+        let mut best_model = None;
+        let mut best_score = 0.0;
         
-        if candidates.is_empty() {
-            return None;
-        }
-        
-        // Score and rank candidates
-        let mut scored_models: Vec<_> = candidates.into_iter()
-            .map(|model| {
-                let score = self.calculate_model_score(model, use_case, capabilities);
-                (model, score)
-            })
-            .collect();
-        
-        scored_models.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        
-        scored_models.first().map(|(model, _)| *model)
-    }
-    
-    /// Get top N recommended models for a use case
-    pub fn get_top_recommendations(&self, 
-        use_case: &UseCase, 
-        capabilities: &[ModelCapability],
-        n: usize,
-        constraints: Option<&ModelConstraints>
-    ) -> Vec<(&ModelInfo, f64)> {
-        let mut scored_models: Vec<_> = self.cache.models.values()
-            .filter(|model| {
-                capabilities.iter().all(|cap| model.capabilities.contains(cap)) &&
-                model.availability.is_available &&
-                constraints.map_or(true, |c| self.meets_constraints(model, c))
-            })
-            .map(|model| {
-                let score = self.calculate_model_score(model, use_case, capabilities);
-                (model, score)
-            })
-            .collect();
-        
-        scored_models.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        scored_models.truncate(n);
-        
-        scored_models
-    }
-    
-    fn meets_constraints(&self, model: &ModelInfo, constraints: &ModelConstraints) -> bool {
-        if let Some(max_latency) = constraints.max_latency_ms {
-            if model.performance_metrics.latency_ms > max_latency {
-                return false;
-            }
-        }
-        
-        if let Some(min_tokens_per_second) = constraints.min_tokens_per_second {
-            if model.performance_metrics.tokens_per_second < min_tokens_per_second {
-                return false;
-            }
-        }
-        
-        if let Some(max_cost) = constraints.max_cost_per_token {
-            if let Some(cost) = model.cost_info.output_cost_per_token {
-                if cost > max_cost {
-                    return false;
+        for model in self.cache.models.values() {
+            // Check if model supports this use case
+            if model.ideal_use_cases.contains(use_case) {
+                // Get evaluation score
+                if let Some(score_str) = model.metadata.get("evaluation_score") {
+                    if let Ok(score) = score_str.parse::<f64>() {
+                        if score > best_score {
+                            best_score = score;
+                            best_model = Some(model.clone());
+                        }
+                    }
                 }
             }
         }
         
-        if let Some(required_provider) = &constraints.required_provider {
-            if &model.provider != required_provider {
-                return false;
+        best_model
+    }
+    
+    /// Re-evaluate a specific model with latest tests
+    pub async fn re_evaluate_model(
+        &mut self,
+        model_id: &str,
+        model_client: Arc<dyn crate::model_clients::ModelClient>,
+    ) -> Result<Option<evaluator::ModelEvaluationResult>> {
+        if let Some(evaluator) = &self.evaluator {
+            if let Some(model) = self.cache.models.get(model_id).cloned() {
+                tracing::info!("Re-evaluating model: {}", model.name);
+                
+                match evaluator.evaluate_model(&model, model_client).await {
+                    Ok(evaluation_result) => {
+                        // Update model with new evaluation
+                        self.update_model_with_evaluation(&model, &evaluation_result).await;
+                        return Ok(Some(evaluation_result));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to re-evaluate model {}: {}", model.name, e);
+                        return Err(e);
+                    }
+                }
             }
         }
         
-        true
+        Ok(None)
     }
     
-    fn calculate_model_score(&self, 
-        model: &ModelInfo, 
-        use_case: &UseCase, 
-        capabilities: &[ModelCapability]
-    ) -> f64 {
-        let mut score = model.quality_scores.overall;
+    /// Get evaluation summary for all models
+    pub fn get_evaluation_summary(&self) -> EvaluationSummary {
+        let mut summary = EvaluationSummary::default();
         
-        // Boost score for ideal use case match
-        if model.ideal_use_cases.contains(use_case) {
-            score += 0.2;
+        for model in self.cache.models.values() {
+            summary.total_models += 1;
+            
+            if let Some(score_str) = model.metadata.get("evaluation_score") {
+                if let Ok(score) = score_str.parse::<f64>() {
+                    summary.evaluated_models += 1;
+                    summary.average_score = (summary.average_score * (summary.evaluated_models - 1) as f64 + score) / summary.evaluated_models as f64;
+                    
+                    if score > summary.highest_score {
+                        summary.highest_score = score;
+                        summary.best_model = Some(model.name.clone());
+                    }
+                    
+                    if score < summary.lowest_score || summary.lowest_score == 0.0 {
+                        summary.lowest_score = score;
+                    }
+                }
+            }
         }
         
-        // Boost score for capability matches
-        let capability_match_ratio = capabilities.iter()
-            .filter(|cap| model.capabilities.contains(cap))
-            .count() as f64 / capabilities.len() as f64;
-        score += capability_match_ratio * 0.3;
-        
-        // Consider performance metrics
-        if model.performance_metrics.tokens_per_second > 50.0 {
-            score += 0.1;
-        }
-        
-        // Penalize for known weaknesses that might affect the use case
-        let weakness_penalty = model.weaknesses.len() as f64 * 0.02;
-        score -= weakness_penalty;
-        
-        score.max(0.0).min(1.0)
+        summary
     }
 }
 

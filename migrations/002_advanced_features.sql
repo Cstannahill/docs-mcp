@@ -12,6 +12,20 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     FOREIGN KEY (page_id) REFERENCES document_pages(id) ON DELETE CASCADE
 );
 
+-- Conversation turns for context management
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_message TEXT NOT NULL,
+    assistant_response TEXT NOT NULL,
+    timestamp DATETIME NOT NULL,
+    context_tokens INTEGER NOT NULL DEFAULT 0,
+    relevance_score REAL NOT NULL DEFAULT 1.0,
+    model_used TEXT,
+    metadata TEXT DEFAULT '{}', -- JSON metadata
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- User interaction tracking for personalized ranking
 CREATE TABLE IF NOT EXISTS user_interactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

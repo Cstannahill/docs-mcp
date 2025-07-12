@@ -3,6 +3,7 @@
 
 use super::{ModelInfo, ModelProviderType, PerformanceMetrics, QualityScores, BenchmarkResult, ModelAvailability};
 use crate::agents::ModelCapability;
+use crate::orchestrator::model_router::PerformanceRecord;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json;
@@ -412,6 +413,32 @@ impl ModelDatabase {
         Ok(())
     }
     
+    /// Record performance metrics for a model
+    pub async fn record_performance(&self, record: &PerformanceRecord) -> Result<()> {
+        let timestamp_chrono = chrono::Utc::now(); // Convert Instant to DateTime
+        
+        sqlx::query(r#"
+            INSERT INTO model_performance_history 
+            (model_id, measured_at, response_time_ms, tokens_per_second, success_rate, error_rate, quality_score, cost_per_token, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#)
+        .bind("default_model") // We'll need model_id from somewhere else
+        .bind(timestamp_chrono)
+        .bind(record.metrics.execution_time_ms as i64)
+        .bind(0.0) // tokens_per_second - calculate from metrics
+        .bind(1.0) // success_rate - default to success
+        .bind(0.0) // error_rate
+        .bind(record.metrics.quality_score)
+        .bind(0.001) // cost_per_token - default
+        .bind(record.metrics.tokens_used as i64) // input_tokens
+        .bind(record.metrics.tokens_used as i64) // output_tokens
+        .execute(&self.pool)
+        .await
+        .context("Failed to record performance metrics")?;
+        
+        Ok(())
+    }
+
     /// Convert database row to ModelInfo
     fn row_to_model_info(&self, row: sqlx::sqlite::SqliteRow) -> Result<ModelInfo> {
         let capabilities: Vec<ModelCapability> = serde_json::from_str(&row.get::<String, _>("capabilities"))?;

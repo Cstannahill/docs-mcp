@@ -1,18 +1,3 @@
-mod ai_integration;
-mod cache;
-mod chat_interface;
-mod database;
-mod embeddings;
-mod enhanced_search;
-mod fetcher;
-mod file_manager;
-mod http_server;
-mod learning;
-mod ranking;
-mod server;
-mod scheduler;
-mod web_search;
-
 use anyhow::Result;
 use clap::{Arg, Command};
 use std::path::PathBuf;
@@ -22,10 +7,12 @@ use tracing_subscriber;
 // Load environment variables from .env file
 use dotenv::dotenv;
 
-use database::Database;
-use server::McpServer;
-use http_server::HttpServer;
-use scheduler::Scheduler;
+use docs_mcp_server::{
+    database::Database,
+    server::McpServer,
+    http_server::HttpServer,
+    scheduler::Scheduler,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

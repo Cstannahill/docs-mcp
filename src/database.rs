@@ -163,6 +163,11 @@ impl Database {
         Self::new(":memory:").await
     }
 
+    /// Get access to the underlying database pool
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn add_source(&self, source: &DocumentationSource) -> Result<()> {
         sqlx::query(
             r#"

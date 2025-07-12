@@ -8,7 +8,7 @@
 //! 4. Builds and executes efficient pipelines with parallel execution where possible
 //! 5. Manages context and data flow between agents
 
-use crate::agents::{Agent, AgentCapability, FlowContext};
+use crate::agents::{Agent, AgentCapability, FlowContext, AgentOutput, OutputMetadata, ExecutionMetrics};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1288,13 +1288,13 @@ impl ExecutionEngine {
         log::debug!("Calling agent.execute() with model: {}", model_name);
         let start_time = std::time::Instant::now();
         
-        let result = agent.execute(task_input, context, model_client).await
+        let result = agent.execute(context).await
             .with_context(|| format!("Agent '{}' failed to execute task '{}'", task.agent_name, task.task_id))?;
         
         let execution_time = start_time.elapsed();
         log::info!("Task '{}' completed successfully in {:?}", task.task_id, execution_time);
         
-        Ok(result)
+        Ok(AgentOutput::new().with_field("result", result))
     }
     
     async fn execute_task_with_timeout(&self,

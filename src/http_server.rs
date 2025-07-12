@@ -19,11 +19,19 @@ use tracing::{info, error};
 use crate::chat_interface::{ChatInterface, ChatRequest, ChatResponse};
 use crate::enhanced_search::EnhancedSearchSystem;
 use crate::database::Database;
+use crate::agents::{Agent, AgentCapability, FlowContext};
+use crate::agents::context_manager::ContextManager;
+use crate::agents::coordinator::{AgentCoordinator, TaskRequest, Priority};
+use crate::agents::model_selector::{ModelSelector, ModelSelectorAgent};
 
 pub struct HttpServer {
     chat_interface: ChatInterface,
     enhanced_search: EnhancedSearchSystem,
     db: Database,
+    // New agentic components
+    context_manager: Arc<ContextManager>,
+    agent_coordinator: Arc<AgentCoordinator>,
+    model_selector: Arc<ModelSelector>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,13 +112,38 @@ impl HttpServer {
             tracing::info!("Advanced features migration failed, continuing with basic functionality: {}", e);
         }
         
-        let enhanced_search = EnhancedSearchSystem::new(db.clone(), openai_api_key).await?;
+        let enhanced_search = EnhancedSearchSystem::new(db.clone(), openai_api_key.clone()).await?;
         let chat_interface = ChatInterface::new(enhanced_search.clone()).await?;
+
+        // Initialize agentic components
+        let embedding_generator = enhanced_search.embedding_generator();
+        let context_manager = Arc::new(ContextManager::new(
+            Arc::new(db.clone()),
+            embedding_generator,
+        ).await?);
+
+        let agent_coordinator = Arc::new(AgentCoordinator::new(10)); // Max 10 concurrent tasks
+
+        // Initialize model discovery system and model selector
+        let model_db = crate::model_discovery::ModelDatabase::new(db.pool().clone());
+        let model_selector = Arc::new(ModelSelector::new(Arc::new(model_db)).await?);
+
+        // Register agents with coordinator
+        agent_coordinator.register_agent(context_manager.clone()).await;
+        
+        // Create ModelSelectorAgent wrapper for the coordinator
+        let model_selector_agent = Arc::new(ModelSelectorAgent::new(model_selector.clone()));
+        agent_coordinator.register_agent(model_selector_agent).await;
+        
+        agent_coordinator.start_health_monitor().await;
 
         Ok(Self {
             chat_interface,
             enhanced_search,
             db,
+            context_manager,
+            agent_coordinator,
+            model_selector,
         })
     }
 
@@ -136,6 +169,11 @@ impl HttpServer {
             .route("/files/list", post(list_directory_handler))
             .route("/files/find", post(find_files_handler))
             .route("/files/search", post(search_files_handler))
+            // Agentic system endpoints
+            .route("/agents/context/stats", get(context_stats_handler))
+            .route("/agents/coordinator/stats", get(coordinator_stats_handler))
+            .route("/agents/models/recommend", post(model_recommendation_handler))
+            .route("/agents/models/performance", get(model_performance_handler))
             .nest_service("/static", ServeDir::new("static"))
             .fallback_service(ServeDir::new("static"))
             .layer(CorsLayer::permissive())
@@ -160,6 +198,9 @@ impl Clone for HttpServer {
             chat_interface: self.chat_interface.clone(),
             enhanced_search: self.enhanced_search.clone(),
             db: self.db.clone(),
+            context_manager: Arc::clone(&self.context_manager),
+            agent_coordinator: Arc::clone(&self.agent_coordinator),
+            model_selector: Arc::clone(&self.model_selector),
         }
     }
 }
@@ -702,6 +743,107 @@ async fn search_files_handler(
         Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
         Err(e) => Json(ApiResponse::error(&format!("File content search failed: {}", e))),
     }
+}
+
+// Agentic system endpoint handlers
+async fn context_stats_handler(
+    State(_state): State<AppState>,
+    Query(_params): Query<HashMap<String, String>>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    // let session_id = params.get("session_id").unwrap_or(&"default".to_string()).clone();
+    
+    // Temporarily disabled due to agentic system being commented out
+    // match state.context_manager.get_context_stats(&session_id).await {
+    //     Ok(stats) => Json(ApiResponse::success(serde_json::to_value(stats).unwrap())),
+    //     Err(e) => Json(ApiResponse::error(&format!("Failed to get context stats: {}", e))),
+    // }
+    let stats = serde_json::json!({"status": "agentic_system_disabled"});
+    Json(ApiResponse::success(stats))
+}
+
+async fn coordinator_stats_handler(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
+    let stats = state.agent_coordinator.get_queue_stats().await;
+    let stats_value = serde_json::to_value(stats).unwrap_or(serde_json::json!({"error": "serialization_failed"}));
+    Json(ApiResponse::success(stats_value))
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelRecommendationRequest {
+    task_type: String,
+    complexity: Option<String>,
+    max_cost: Option<f32>,
+    prefer_speed: Option<bool>,
+    prefer_quality: Option<bool>,
+    context_length: Option<usize>,
+}
+
+async fn model_recommendation_handler(
+    State(_state): State<AppState>,
+    Json(_request): Json<ModelRecommendationRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    // Temporarily disabled due to agentic system being commented out
+    /*
+    // Convert request to selection criteria
+    let complexity = match request.complexity.as_deref() {
+        Some("simple") => crate::agents::model_selector::TaskComplexity::Simple,
+        Some("moderate") => crate::agents::model_selector::TaskComplexity::Moderate,
+        Some("complex") => crate::agents::model_selector::TaskComplexity::Complex,
+        Some("very_complex") => crate::agents::model_selector::TaskComplexity::VeryComplex,
+        _ => crate::agents::model_selector::TaskComplexity::Moderate,
+    };
+
+    let capabilities = match request.task_type.as_str() {
+        "code_generation" => vec![crate::agents::model_selector::ModelCapability::CodeGeneration],
+        "code_analysis" => vec![crate::agents::model_selector::ModelCapability::CodeAnalysis],
+        "documentation" => vec![crate::agents::model_selector::ModelCapability::Documentation],
+        "conversation" => vec![crate::agents::model_selector::ModelCapability::Conversation],
+        _ => vec![crate::agents::model_selector::ModelCapability::GeneralPurpose],
+    };
+
+    let criteria = crate::agents::model_selector::ModelSelectionCriteria {
+        required_capabilities: capabilities,
+        task_complexity: complexity,
+        max_response_time: None,
+        max_cost_per_request: request.max_cost,
+        min_quality_score: None,
+        prefer_speed: request.prefer_speed.unwrap_or(false),
+        prefer_quality: request.prefer_quality.unwrap_or(true),
+        prefer_cost_efficiency: false,
+        context_length_required: request.context_length,
+        preferred_models: Vec::new(),
+        excluded_models: Vec::new(),
+    };
+    */
+
+    // Temporarily disabled due to agentic system being commented out
+    // match state.model_selector.get_model_recommendations(&criteria, None, 5).await {
+    //     Ok(recommendations) => Json(ApiResponse::success(serde_json::to_value(recommendations).unwrap())),
+    //     Err(e) => Json(ApiResponse::error(&format!("Failed to get recommendations: {}", e))),
+    // }
+    let recommendations = serde_json::json!({"status": "agentic_system_disabled"});
+    Json(ApiResponse::success(recommendations))
+}
+
+async fn model_performance_handler(
+    State(_state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    // Temporarily disabled due to agentic system being commented out
+    /*
+    if let Some(model_name) = params.get("model") {
+        match state.model_selector.get_model_performance(model_name).await {
+            Some(performance) => Json(ApiResponse::success(serde_json::to_value(performance).unwrap())),
+            None => Json(ApiResponse::error("Model not found or no performance data available")),
+        }
+    } else {
+        // Return performance stats for all models
+        let stats = state.model_selector.get_selection_stats().await;
+        Json(ApiResponse::success(serde_json::to_value(stats).unwrap()))
+    }
+    */
+    let _model_name = params.get("model"); // Suppress warning
+    let performance = serde_json::json!({"status": "agentic_system_disabled"});
+    Json(ApiResponse::success(performance))
 }
 
 #[cfg(test)]

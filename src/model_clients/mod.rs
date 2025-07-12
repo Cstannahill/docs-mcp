@@ -26,7 +26,7 @@ pub trait ModelClient: Send + Sync {
 }
 
 /// Request structure for model generation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelRequest {
     pub prompt: String,
     pub system_prompt: Option<String>,
