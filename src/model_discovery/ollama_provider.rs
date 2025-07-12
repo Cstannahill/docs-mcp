@@ -111,12 +111,36 @@ impl OllamaModelProvider {
             .json(&serde_json::json!({ "name": model_name }))
             .send()
             .await?;
-        
-        if response.status().is_success() {
-            let info: OllamaModelInfo = response.json().await?;
-            Ok(info)
+
+        let status = response.status();
+        let text = response.text().await?;
+        debug!("Ollama /api/show response for {}: {}", model_name, text);
+
+        if status.is_success() {
+            // Try to parse as expected struct, fallback to partial/default if missing fields
+            match serde_json::from_str::<OllamaModelInfo>(&text) {
+                Ok(info) => Ok(info),
+                Err(e) => {
+                    warn!("Failed to parse OllamaModelInfo for {}: {}", model_name, e);
+                    // Try to parse as a wrapper or fallback to default
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(val) => {
+                            // Attempt to extract fields manually
+                            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(model_name).to_string();
+                            let modified_at = val.get("modified_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let digest = val.get("digest").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            Ok(OllamaModelInfo { name, modified_at, size, digest })
+                        }
+                        Err(e2) => {
+                            error!("Failed to parse OllamaModelInfo fallback for {}: {}", model_name, e2);
+                            Err(anyhow::anyhow!("Failed to decode Ollama model info for {}: {}", model_name, e2))
+                        }
+                    }
+                }
+            }
         } else {
-            Err(anyhow::anyhow!("Failed to get model info: {}", response.status()))
+            Err(anyhow::anyhow!("Failed to get model info: {}", status))
         }
     }
     

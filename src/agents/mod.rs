@@ -18,11 +18,11 @@ use anyhow::Result;
 pub mod context_manager;
 pub mod coordinator;
 pub mod model_selector;
-// TODO: Implement additional agents
-// pub mod doc_generator;
-// pub mod test_generator; 
-// pub mod security_auditor;
-// pub mod performance_analyzer;
+pub mod doc_generator;
+pub mod test_generator;
+pub mod security_auditor;
+pub mod performance_analyzer;
+pub mod embedder;
 
 // Re-export model client types for convenience
 pub use crate::model_clients::{ModelClient, ModelRequest, ModelResponse};
@@ -173,6 +173,57 @@ impl AgentOutput {
     
     pub fn metrics(&self) -> &ExecutionMetrics {
         &self.metrics
+    }
+    
+    /// Check if a field exists in the output
+    pub fn has_field(&self, key: &str) -> bool {
+        self.fields.contains_key(key)
+    }
+    
+    /// Get the raw value as JSON
+    pub fn raw_value(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(&self.fields)?)
+    }
+    
+    /// Get all field keys
+    pub fn field_keys(&self) -> Vec<String> {
+        self.fields.keys().cloned().collect()
+    }
+    
+    /// Merge with another output, keeping the higher quality data
+    pub fn merge_with(&mut self, other: &Self) -> &mut Self {
+        // Merge fields - prefer our data for duplicate keys
+        for (key, value) in &other.fields {
+            if !self.fields.contains_key(key) {
+                self.fields.insert(key.clone(), value.clone());
+            }
+        }
+        
+        // Take best confidence score
+        self.metadata.confidence_score = self.metadata.confidence_score.max(other.metadata.confidence_score);
+        
+        // Sum token usages
+        self.metrics.tokens_used.input_tokens += other.metrics.tokens_used.input_tokens;
+        self.metrics.tokens_used.output_tokens += other.metrics.tokens_used.output_tokens;
+        
+        // Sum model calls
+        self.metrics.model_calls += other.metrics.model_calls;
+        
+        // Average quality scores, weighted by token count
+        let total_tokens_self = self.metrics.tokens_used.input_tokens + self.metrics.tokens_used.output_tokens;
+        let total_tokens_other = other.metrics.tokens_used.input_tokens + other.metrics.tokens_used.output_tokens;
+        let total_tokens = total_tokens_self + total_tokens_other;
+        
+        if total_tokens > 0 {
+            let self_weight = total_tokens_self as f64 / total_tokens as f64;
+            let other_weight = total_tokens_other as f64 / total_tokens as f64;
+            
+            self.metrics.quality_score = 
+                self.metrics.quality_score * self_weight +
+                other.metrics.quality_score * other_weight;
+        }
+        
+        self
     }
 }
 
