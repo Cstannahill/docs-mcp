@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::Json,
     routing::{get, post},
     Router,
@@ -46,6 +46,26 @@ pub struct ApiResponse<T> {
     pub data: Option<T>,
     pub error: Option<String>,
     pub timestamp: String,
+}
+
+impl<T> ApiResponse<T> {
+    pub fn success(data: T) -> Self {
+        Self {
+            success: true,
+            data: Some(data),
+            error: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    pub fn error(message: &str) -> Self {
+        Self {
+            success: false,
+            data: None,
+            error: Some(message.to_string()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +116,17 @@ impl HttpServer {
             .route("/chat", post(chat_post_handler))
             .route("/search", get(search_handler))
             .route("/docs", get(docs_handler))
+            // Web search endpoints
+            .route("/web-search", post(web_search_handler))
+            .route("/web-search/programming", post(programming_search_handler))
+            .route("/web-search/docs", post(docs_search_handler))
+            .route("/web-search/summary", post(page_summary_handler))
+            // File operation endpoints
+            .route("/files/read", post(read_file_handler))
+            .route("/files/write", post(write_file_handler))
+            .route("/files/list", post(list_directory_handler))
+            .route("/files/find", post(find_files_handler))
+            .route("/files/search", post(search_files_handler))
             .nest_service("/static", ServeDir::new("static"))
             .fallback_service(ServeDir::new("static"))
             .layer(CorsLayer::permissive())
@@ -138,6 +169,10 @@ async fn root_handler() -> Json<ApiResponse<ServerInfo>> {
             "Multi-factor Content Ranking".to_string(),
             "User Interaction Tracking".to_string(),
             "Adaptive Recommendations".to_string(),
+            "Web Search Integration".to_string(),
+            "File System Operations".to_string(),
+            "Programming Resource Search".to_string(),
+            "Page Content Summarization".to_string(),
             "8,563+ Documentation Pages".to_string(),
         ],
         endpoints: vec![
@@ -448,6 +483,216 @@ print(result["data"]["response"])
 
 The system learns from interactions to provide increasingly personalized recommendations!
     "#
+}
+
+// Web search endpoint handlers
+#[derive(Debug, Deserialize)]
+struct WebSearchRequest {
+    query: String,
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProgrammingSearchRequest {
+    query: String,
+    language: Option<String>,
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocsSearchRequest {
+    query: String,
+    technology: Option<String>,
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageSummaryRequest {
+    url: String,
+    max_words: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadFileRequest {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WriteFileRequest {
+    path: String,
+    content: String,
+    append: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListDirectoryRequest {
+    path: String,
+    recursive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FindFilesRequest {
+    pattern: String,
+    directory: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchFilesRequest {
+    query: String,
+    directory: Option<String>,
+    file_extensions: Option<Vec<String>>,
+    context_lines: Option<usize>,
+}
+
+async fn web_search_handler(
+    State(state): State<AppState>,
+    Json(request): Json<WebSearchRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let chat_request = ChatRequest {
+        message: format!("web search {}", request.query),
+        session_id: "web_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("Web search failed: {}", e))),
+    }
+}
+
+async fn programming_search_handler(
+    State(state): State<AppState>,
+    Json(request): Json<ProgrammingSearchRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let lang_part = request.language.as_ref().map(|l| format!(" {}", l)).unwrap_or_default();
+    let chat_request = ChatRequest {
+        message: format!("programming search {}{}", request.query, lang_part),
+        session_id: "programming_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("Programming search failed: {}", e))),
+    }
+}
+
+async fn docs_search_handler(
+    State(state): State<AppState>,
+    Json(request): Json<DocsSearchRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let tech_part = request.technology.as_ref().map(|t| format!(" {}", t)).unwrap_or_default();
+    let chat_request = ChatRequest {
+        message: format!("docs search {}{}", request.query, tech_part),
+        session_id: "docs_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("Documentation search failed: {}", e))),
+    }
+}
+
+async fn page_summary_handler(
+    State(state): State<AppState>,
+    Json(request): Json<PageSummaryRequest>,
+) -> Json<ApiResponse<String>> {
+    let chat_request = ChatRequest {
+        message: format!("summarize {}", request.url),
+        session_id: "summary_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.response)),
+        Err(e) => Json(ApiResponse::error(&format!("Page summary failed: {}", e))),
+    }
+}
+
+// File operation endpoint handlers
+async fn read_file_handler(
+    State(state): State<AppState>,
+    Json(request): Json<ReadFileRequest>,
+) -> Json<ApiResponse<String>> {
+    let chat_request = ChatRequest {
+        message: format!("read file {}", request.path),
+        session_id: "file_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.response)),
+        Err(e) => Json(ApiResponse::error(&format!("File read failed: {}", e))),
+    }
+}
+
+async fn write_file_handler(
+    State(state): State<AppState>,
+    Json(request): Json<WriteFileRequest>,
+) -> Json<ApiResponse<String>> {
+    let append_text = if request.append.unwrap_or(false) { " append" } else { "" };
+    let chat_request = ChatRequest {
+        message: format!("write file {}{}", request.path, append_text),
+        session_id: "file_api".to_string(),
+        context: Some(request.content),
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.response)),
+        Err(e) => Json(ApiResponse::error(&format!("File write failed: {}", e))),
+    }
+}
+
+async fn list_directory_handler(
+    State(state): State<AppState>,
+    Json(request): Json<ListDirectoryRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let recursive_text = if request.recursive.unwrap_or(false) { " recursive" } else { "" };
+    let chat_request = ChatRequest {
+        message: format!("list directory {}{}", request.path, recursive_text),
+        session_id: "file_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("Directory listing failed: {}", e))),
+    }
+}
+
+async fn find_files_handler(
+    State(state): State<AppState>,
+    Json(request): Json<FindFilesRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let dir_part = request.directory.as_ref().map(|d| format!(" in {}", d)).unwrap_or_default();
+    let chat_request = ChatRequest {
+        message: format!("find files {}{}", request.pattern, dir_part),
+        session_id: "file_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("File search failed: {}", e))),
+    }
+}
+
+async fn search_files_handler(
+    State(state): State<AppState>,
+    Json(request): Json<SearchFilesRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let dir_part = request.directory.as_ref().map(|d| format!(" in {}", d)).unwrap_or_default();
+    let chat_request = ChatRequest {
+        message: format!("search files {}{}", request.query, dir_part),
+        session_id: "file_api".to_string(),
+        context: None,
+    };
+
+    match state.chat_interface.process_chat(chat_request).await {
+        Ok(response) => Json(ApiResponse::success(response.results.unwrap_or(serde_json::Value::Null))),
+        Err(e) => Json(ApiResponse::error(&format!("File content search failed: {}", e))),
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,4 @@
-use anyhow::Result;
 use lru::LruCache;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

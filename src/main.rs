@@ -5,17 +5,22 @@ mod database;
 mod embeddings;
 mod enhanced_search;
 mod fetcher;
+mod file_manager;
 mod http_server;
 mod learning;
 mod ranking;
 mod server;
 mod scheduler;
+mod web_search;
 
 use anyhow::Result;
 use clap::{Arg, Command};
 use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber;
+
+// Load environment variables from .env file
+use dotenv::dotenv;
 
 use database::Database;
 use server::McpServer;
@@ -24,6 +29,9 @@ use scheduler::Scheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load environment variables from .env file
+    dotenv().ok();
+    
     // Initialize logging
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
@@ -101,7 +109,7 @@ async fn main() -> Result<()> {
         http_server.start_server(port).await?;
     } else {
         // Create and start MCP server
-        let server = McpServer::new(&db_url, openai_api_key).await?;
+        let server = McpServer::new(&db_url, openai_api_key).await.map_err(|e| anyhow::anyhow!("{}", e))?;
         
         info!("Starting MCP server...");
         server.run().await?;

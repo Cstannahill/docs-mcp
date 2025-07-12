@@ -13,7 +13,8 @@ pub struct DocumentationSource {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum DocType {
     Rust,
     Tauri,
@@ -38,7 +39,7 @@ impl DocType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct DocumentPage {
     pub id: String,
     pub source_id: String,
@@ -603,19 +604,30 @@ impl Database {
         Ok(count as i32)
     }
 
+    /// Count documents for a specific source
+    pub async fn count_source_documents(&self, source_id: &str) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM document_pages WHERE source_id = ?")
+            .bind(source_id)
+            .fetch_one(&self.pool)
+            .await?;
+        
+        Ok(row.get("count"))
+    }
+
     // Vector Embeddings Methods
     pub async fn store_document_embedding(&self, embedding: &DocumentEmbedding) -> Result<i64> {
         let query = r#"
-            INSERT INTO document_embeddings (page_id, embedding, chunk_index, total_chunks, embedding_model, created_at)
+            INSERT INTO document_embeddings (page_id, embedding, chunk_index, embedding_model, chunk_text, created_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#;
         
         let id = sqlx::query(query)
             .bind(&embedding.page_id)
-            .bind(&embedding.embedding)
+            .bind(&embedding.embedding) // Already a JSON string
             .bind(embedding.chunk_index)
-            .bind(embedding.total_chunks)
             .bind(&embedding.embedding_model)
+            .bind(&embedding.chunk_text)
+            .bind(embedding.created_at)
             .bind(embedding.created_at)
             .execute(&self.pool)
             .await?
@@ -998,7 +1010,7 @@ impl Database {
     }
 
     pub async fn get_related_documents(&self, page_id: &str, relationship_type: Option<RelationshipType>) -> Result<Vec<DocumentRelationship>> {
-        let query = if let Some(rel_type) = relationship_type {
+        let query = if let Some(ref rel_type) = relationship_type {
             r#"
                 SELECT id, source_page_id, target_page_id, relationship_type, strength, created_at
                 FROM document_relationships 
@@ -1052,20 +1064,59 @@ impl Database {
         
         Ok(())
     }
+
+    // Missing methods for compilation - these need to be implemented
+    pub async fn get_page(&self, page_id: &str) -> Result<Option<DocumentPage>> {
+        // TODO: Implement actual database query
+        Ok(None)
+    }
+
+    pub async fn get_page_view_count(&self, page_id: &str) -> Result<Option<i32>> {
+        // TODO: Implement actual database query  
+        Ok(Some(0))
+    }
+
+    pub async fn get_page_bookmark_count(&self, page_id: &str) -> Result<Option<i32>> {
+        // TODO: Implement actual database query
+        Ok(Some(0))
+    }
+
+    pub async fn is_page_in_learning_paths(&self, page_id: &str, user_context: &UserContext) -> Result<bool> {
+        // TODO: Implement actual database query
+        Ok(false)
+    }
+
+    pub async fn get_search_analytics_summary(&self) -> Result<SearchAnalytics> {
+        // TODO: Implement actual database query
+        Ok(SearchAnalytics {
+            id: None,
+            session_id: "summary".to_string(),
+            query: "summary".to_string(),
+            doc_type: None,
+            results_count: 0,
+            clicked_page_id: None,
+            click_position: None,
+            search_duration_ms: None,
+            filters_used: "{}".to_string(),
+            search_time_ms: 0,
+            timestamp: Utc::now(),
+            created_at: Utc::now(),
+        })
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct DocumentEmbedding {
     pub id: Option<i64>,
     pub page_id: String,
     pub embedding_model: String,
-    pub embedding: Vec<f32>,
+    pub embedding: String, // JSON serialized Vec<f32>
     pub chunk_index: i32,
     pub chunk_text: String,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserInteraction {
     pub id: Option<i64>,
     pub session_id: String,
@@ -1073,10 +1124,13 @@ pub struct UserInteraction {
     pub interaction_type: InteractionType,
     pub context: Option<String>,
     pub duration_seconds: Option<i32>,
+    pub metadata: Option<String>,
+    pub timestamp: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum InteractionType {
     View,
     Search,
@@ -1097,7 +1151,7 @@ impl InteractionType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct LearningPath {
     pub id: String,
     pub title: String,
@@ -1110,7 +1164,8 @@ pub struct LearningPath {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum DifficultyLevel {
     Beginner,
     Intermediate,
@@ -1127,7 +1182,7 @@ impl DifficultyLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct LearningPathStep {
     pub id: Option<i64>,
     pub path_id: String,
@@ -1140,7 +1195,7 @@ pub struct LearningPathStep {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserLearningProgress {
     pub id: Option<i64>,
     pub session_id: String,
@@ -1153,17 +1208,19 @@ pub struct UserLearningProgress {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct DocumentRelationship {
     pub id: Option<i64>,
     pub source_page_id: String,
+    pub target_page_id: String,
     pub related_page_id: String,
     pub relationship_type: RelationshipType,
     pub strength: f32,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum RelationshipType {
     Prerequisite,
     FollowUp,
@@ -1192,22 +1249,28 @@ pub struct SearchAnalytics {
     pub clicked_page_id: Option<String>,
     pub click_position: Option<i32>,
     pub search_duration_ms: Option<i32>,
+    pub filters_used: String,
+    pub search_time_ms: i32,
+    pub timestamp: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct DocumentQualityMetrics {
     pub page_id: String,
     pub freshness_score: f32,
     pub completeness_score: f32,
     pub accuracy_score: f32,
+    pub readability_score: f32,
+    pub overall_score: f32,
     pub user_rating_avg: f32,
     pub view_count: i32,
     pub bookmark_count: i32,
+    pub calculated_at: DateTime<Utc>,
     pub last_calculated: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ContentSuggestion {
     pub id: Option<i64>,
     pub session_id: String,
@@ -1220,7 +1283,8 @@ pub struct ContentSuggestion {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum SuggestionType {
     NextStep,
     Related,

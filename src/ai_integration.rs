@@ -2,9 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{info, warn, debug};
-use chrono::Utc;
 
-use crate::database::{Database, DocumentPage, DocType, SearchQuery, SearchFilters, RankingPreferences, SearchResult};
+use crate::database::{Database, DocumentPage, DocType, SearchQuery, SearchFilters, RankingPreferences};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIContext {

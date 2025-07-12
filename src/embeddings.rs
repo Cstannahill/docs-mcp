@@ -15,39 +15,80 @@ pub struct EmbeddingService {
 
 impl EmbeddingService {
     pub fn new() -> Self {
+        let api_key = std::env::var("OPENAI_API_KEY").ok();
+        
+        if api_key.is_some() {
+            println!("✅ OpenAI API key found - will use text-embedding-3-small");
+        } else {
+            println!("⚠️  No OpenAI API key found - will fallback to Ollama or simple embedding");
+        }
+        
         Self {
             client: Client::new(),
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-            model: "text-embedding-3-small".to_string(),
+            api_key,
+            model: "text-embedding-3-small".to_string(), // OpenAI model when available
             cache: HashMap::new(),
         }
     }
 
+    /// Check which embedding providers are available
+    pub async fn check_available_providers(&self) -> (bool, bool) {
+        let openai_available = self.api_key.is_some();
+        
+        // Test Ollama availability
+        let ollama_available = match self.client
+            .get("http://localhost:11434/api/tags")
+            .send()
+            .await
+        {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        };
+        
+        (openai_available, ollama_available)
+    }
+
+    /// Get the currently active embedding model name
+    pub async fn get_active_model(&self) -> String {
+        let (openai_available, ollama_available) = self.check_available_providers().await;
+        
+        if openai_available {
+            self.model.clone()
+        } else if ollama_available {
+            "nomic-embed-text".to_string()
+        } else {
+            "simple-hash-embedding".to_string()
+        }
+    }
+
     /// Generate embeddings for text content
-    pub async fn generate_embedding(&mut self, text: &str) -> Result<Vec<f32>> {
-        // Check cache first
-        if let Some(cached) = self.cache.get(text) {
-            return Ok(cached.clone());
+    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        // Try OpenAI first if API key is available
+        if self.api_key.is_some() {
+            match self.call_openai_embedding(text).await {
+                Ok(embedding) => return Ok(embedding),
+                Err(e) => {
+                    eprintln!("OpenAI embedding failed, falling back to Ollama: {}", e);
+                }
+            }
         }
-
-        // If no API key, return a simple hash-based embedding for demo
-        if self.api_key.is_none() {
-            return Ok(self.generate_simple_embedding(text));
+        
+        // Fallback to Ollama nomic-embed-text
+        match self.call_ollama_embedding(text).await {
+            Ok(embedding) => Ok(embedding),
+            Err(e) => {
+                eprintln!("Ollama embedding failed, using simple embedding: {}", e);
+                // Final fallback to simple hash-based embedding
+                Ok(self.generate_simple_embedding(text))
+            }
         }
-
-        // Call OpenAI API for real embeddings
-        let embedding = self.call_openai_embedding(text).await?;
-        
-        // Cache the result
-        self.cache.insert(text.to_string(), embedding.clone());
-        
-        Ok(embedding)
     }
 
     /// Generate embeddings for document chunks
-    pub async fn generate_document_embeddings(&mut self, db: &Database, page: &DocumentPage) -> Result<Vec<DocumentEmbedding>> {
+    pub async fn generate_document_embeddings(&self, db: &Database, page: &DocumentPage) -> Result<Vec<DocumentEmbedding>> {
         let chunks = self.chunk_document(&page.content, 512);
         let mut embeddings = Vec::new();
+        let active_model = self.get_active_model().await;
 
         for (index, chunk) in chunks.iter().enumerate() {
             let embedding_vec = self.generate_embedding(chunk).await?;
@@ -55,8 +96,8 @@ impl EmbeddingService {
             let embedding = DocumentEmbedding {
                 id: None,
                 page_id: page.id.clone(),
-                embedding_model: self.model.clone(),
-                embedding: embedding_vec,
+                embedding_model: active_model.clone(),
+                embedding: serde_json::to_string(&embedding_vec).unwrap_or_default(),
                 chunk_index: index as i32,
                 chunk_text: chunk.clone(),
                 created_at: chrono::Utc::now(),
@@ -69,9 +110,10 @@ impl EmbeddingService {
     }
 
     /// Perform semantic search using vector similarity
-    pub async fn semantic_search(&mut self, db: &Database, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
+    pub async fn semantic_search(&self, db: &Database, query: &str, limit: usize) -> Result<Vec<(String, f32)>> {
         let query_embedding = self.generate_embedding(query).await?;
-        let similar_chunks = db.find_similar_embeddings(&query_embedding, limit * 3).await?;
+        let embedding_bytes = query_embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+        let similar_chunks = db.search_similar_embeddings(&embedding_bytes, Some((limit * 3) as i32)).await?;
         
         // Group by page and calculate average similarity
         let mut page_scores: HashMap<String, Vec<f32>> = HashMap::new();
@@ -171,6 +213,38 @@ impl EmbeddingService {
         embedding
     }
 
+    /// Call Ollama API for embeddings using nomic-embed-text
+    async fn call_ollama_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        let request_body = json!({
+            "model": "nomic-embed-text",
+            "prompt": text
+        });
+
+        let response = timeout(Duration::from_secs(30), 
+            self.client
+                .post("http://localhost:11434/api/embeddings")
+                .header("Content-Type", "application/json")
+                .json(&request_body)
+                .send()
+        ).await??;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow::anyhow!("Ollama API error: {}", error_text));
+        }
+
+        let response_json: Value = response.json().await?;
+        
+        let embedding = response_json["embedding"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid Ollama embedding response format"))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+
+        Ok(embedding)
+    }
+
     /// Call OpenAI API for embeddings
     async fn call_openai_embedding(&self, text: &str) -> Result<Vec<f32>> {
         let api_key = self.api_key.as_ref()
@@ -214,7 +288,7 @@ impl EmbeddingService {
             let embeddings = self.generate_document_embeddings(db, &page).await?;
             
             for embedding in embeddings {
-                db.store_embedding(&embedding).await?;
+                db.store_document_embedding(&embedding).await?;
             }
             
             // Small delay to respect rate limits
@@ -228,6 +302,23 @@ impl EmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_embedding_fallback_chain() {
+        let service = EmbeddingService::new();
+        let (openai_available, ollama_available) = service.check_available_providers().await;
+        
+        println!("OpenAI available: {}", openai_available);
+        println!("Ollama available: {}", ollama_available);
+        
+        // Should always succeed with at least simple embedding
+        let embedding = service.generate_embedding("Test fallback").await;
+        assert!(embedding.is_ok());
+        
+        let active_model = service.get_active_model().await;
+        println!("Active model: {}", active_model);
+        assert!(!active_model.is_empty());
+    }
 
     #[tokio::test]
     async fn test_simple_embedding_generation() {

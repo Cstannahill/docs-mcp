@@ -23,9 +23,13 @@ serde_json = "1.0"
 reqwest = { version = "0.11", features = ["json"] }
 scraper = "0.18"
 url = "2.4"
+urlencoding = "2.1"
 
 # Async utilities
 futures = "0.3"
+
+# Environment variables
+dotenv = "0.15"
 
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
@@ -44,6 +48,20 @@ clap = { version = "4.0", features = ["derive"] }
 lru = "0.12"
 regex = "1.10"
 html-escape = "0.2"
+
+# Agentic flow architecture dependencies
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4"] }
+tree-sitter = "0.20"
+tree-sitter-rust = "0.20"
+tree-sitter-python = "0.20"
+tree-sitter-typescript = "0.20"
+tower-lsp = "0.20"
+dashmap = "5.5"
+rand = "0.8"
+log = "0.4"
+env_logger = "0.10"
+lazy_static = "1.4"
 
 # File system
 dirs = "5.0"

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
-use crate::database::{Database, DocumentPage, UserContext, DifficultyLevel, InteractionType, SearchAnalytics};
+use crate::database::{Database, UserContext, DifficultyLevel, InteractionType, SearchAnalytics};
 use crate::embeddings::EmbeddingService;
 use crate::ranking::AdvancedRankingEngine;
 use crate::learning::{LearningPathEngine, LearningRecommendation, InteractiveTutorial};
@@ -85,8 +85,8 @@ pub struct LearningSessionResponse {
 
 impl EnhancedSearchSystem {
     pub async fn new(db: Database, openai_api_key: Option<String>) -> Result<Self> {
-        let embedding_service = EmbeddingService::new(openai_api_key).await?;
-        let ranking_engine = AdvancedRankingEngine::new(db.clone()).await?;
+        let embedding_service = EmbeddingService::new();
+        let ranking_engine = AdvancedRankingEngine::new(db.clone());
         let learning_engine = LearningPathEngine::new(db.clone());
 
         Ok(Self {
@@ -107,11 +107,14 @@ impl EnhancedSearchSystem {
             session_id: request.session_id.clone(),
             query: request.query.clone(),
             results_count: 0, // Will be updated
+            search_time_ms: 0, // Will be updated
+            filters_used: serde_json::to_string(&request.filters).unwrap_or_default(),
+            timestamp: chrono::Utc::now(),
+            created_at: chrono::Utc::now(),
+            doc_type: None, // Not using doc_type filtering yet
+            search_duration_ms: Some(0), // Will be updated
             clicked_page_id: None,
             click_position: None,
-            search_time_ms: None, // Will be updated
-            filters_used: serde_json::to_value(&request.filters).unwrap_or_default(),
-            timestamp: Utc::now(),
         };
 
         // Perform search based on type
@@ -124,10 +127,18 @@ impl EnhancedSearchSystem {
 
         // Apply advanced ranking
         if let Some(user_context) = &request.user_context {
+            // Create default ranking preferences
+            let ranking_prefs = crate::database::RankingPreferences {
+                prioritize_recent: false,
+                prioritize_official: true,
+                prioritize_examples: false,
+                context_similarity_weight: 0.25,
+            };
+            
             results = self.ranking_engine.rank_search_results(
                 results,
-                &request.query,
-                user_context,
+                &ranking_prefs,
+                Some(user_context),
             ).await?;
         }
 
@@ -164,7 +175,7 @@ impl EnhancedSearchSystem {
         // Update analytics
         let mut final_analytics = analytics;
         final_analytics.results_count = total_results as i32;
-        final_analytics.search_time_ms = Some(search_time_ms as i32);
+        final_analytics.search_time_ms = search_time_ms as i32;
         self.db.record_search_analytics(&final_analytics).await?;
 
         Ok(EnhancedSearchResponse {
@@ -272,8 +283,10 @@ impl EnhancedSearchSystem {
             page_id: page_id.to_string(),
             interaction_type,
             duration_seconds,
-            metadata: metadata.unwrap_or_default(),
-            timestamp: Utc::now(),
+            metadata: Some(serde_json::to_string(&metadata.unwrap_or_default()).unwrap_or_default()),
+            timestamp: chrono::Utc::now(),
+            context: None,
+            created_at: chrono::Utc::now(),
         };
 
         self.db.record_user_interaction(&interaction).await?;
@@ -284,13 +297,19 @@ impl EnhancedSearchSystem {
         Ok(())
     }
 
+    /// Generate personalized recommendations for a user
+    pub async fn generate_recommendations(&self, user_context: &UserContext) -> Result<LearningRecommendation> {
+        self.learning_engine.generate_recommendations(user_context).await
+    }
+
     /// Search implementation methods
     async fn semantic_search(&self, request: &EnhancedSearchRequest) -> Result<Vec<crate::database::EnhancedSearchResult>> {
         // Generate embedding for query
         let query_embedding = self.embedding_service.generate_embedding(&request.query).await?;
         
         // Find similar documents
-        let similar_pages = self.db.search_similar_embeddings(&query_embedding, Some(50)).await?;
+        let embedding_bytes = query_embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+        let similar_pages = self.db.search_similar_embeddings(&embedding_bytes, Some(50)).await?;
         
         let mut results = Vec::new();
         for (page_id, similarity_score) in similar_pages {
@@ -298,15 +317,15 @@ impl EnhancedSearchSystem {
                 let result = crate::database::EnhancedSearchResult {
                     page,
                     ranking_factors: crate::database::RankingFactors {
-                        text_relevance_score: 0.5, // Default, will be calculated properly
-                        semantic_similarity_score: similarity_score,
+                        text_relevance: 0.5, // Default, will be calculated properly
+                        semantic_similarity: similarity_score,
                         quality_score: 0.8, // Default
                         freshness_score: 0.7, // Default
-                        user_engagement_score: 0.5, // Default
-                        context_relevance_score: 0.6, // Default
-                        final_score: similarity_score * 0.8, // Weighted by semantic similarity
+                        user_engagement: 0.5, // Default
+                        context_relevance: 0.6, // Default
                     },
-                    highlighted_snippets: Vec::new(),
+                    relevance_score: similarity_score * 0.8, // Weighted by semantic similarity
+                    learning_suggestions: Vec::new(),
                     related_pages: Vec::new(),
                 };
                 results.push(result);
@@ -324,15 +343,15 @@ impl EnhancedSearchSystem {
             let result = crate::database::EnhancedSearchResult {
                 page,
                 ranking_factors: crate::database::RankingFactors {
-                    text_relevance_score: 0.8,
-                    semantic_similarity_score: 0.3,
+                    text_relevance: 0.8,
+                    semantic_similarity: 0.3,
                     quality_score: 0.7,
                     freshness_score: 0.6,
-                    user_engagement_score: 0.5,
-                    context_relevance_score: 0.4,
-                    final_score: 0.6,
+                    user_engagement: 0.5,
+                    context_relevance: 0.4,
                 },
-                highlighted_snippets: Vec::new(),
+                relevance_score: 0.6,
+                learning_suggestions: Vec::new(),
                 related_pages: Vec::new(),
             };
             results.push(result);
@@ -353,7 +372,7 @@ impl EnhancedSearchSystem {
         // Add semantic results first (higher weight)
         for mut result in semantic_results {
             if seen_pages.insert(result.page.id.clone()) {
-                result.ranking_factors.final_score *= 1.2; // Boost semantic results
+                result.relevance_score *= 1.2; // Boost semantic results
                 combined_results.push(result);
             }
         }
@@ -388,11 +407,11 @@ impl EnhancedSearchSystem {
                 1.0
             };
             
-            result.ranking_factors.final_score *= learning_boost;
+            result.relevance_score *= learning_boost;
         }
         
         // Sort by final score
-        results.sort_by(|a, b| b.ranking_factors.final_score.partial_cmp(&a.ranking_factors.final_score).unwrap());
+        results.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap());
         
         Ok(results)
     }
@@ -400,10 +419,10 @@ impl EnhancedSearchSystem {
     async fn apply_search_filters(&self, results: Vec<crate::database::EnhancedSearchResult>, filters: &SearchFilters) -> Result<Vec<crate::database::EnhancedSearchResult>> {
         let filtered_results = results.into_iter()
             .filter(|result| {
-                // Filter by doc type
-                if !filters.doc_types.is_empty() && !filters.doc_types.contains(&result.page.doc_type) {
-                    return false;
-                }
+                // TODO: Add doc type filtering when DocumentPage has doc_type field
+                // if !filters.doc_types.is_empty() && !filters.doc_types.contains(&result.page.doc_type) {
+                //     return false;
+                // }
                 
                 // Add other filters as needed
                 true
@@ -423,7 +442,7 @@ impl EnhancedSearchSystem {
                 session_id: session_id.to_string(),
                 suggested_page_id: result.page.id.clone(),
                 suggestion_type: crate::database::SuggestionType::Related,
-                confidence_score: result.ranking_factors.final_score,
+                confidence_score: result.ranking_factors.text_relevance,
                 reason: Some(format!("Related to your search for '{}'", query)),
                 shown: false,
                 clicked: false,
@@ -478,10 +497,9 @@ impl EnhancedSearchSystem {
         Ok(UserContext {
             session_id: session_id.to_string(),
             skill_level: Some(DifficultyLevel::Intermediate), // Default
-            preferred_topics: Vec::new(),
+            preferred_doc_types: Vec::new(),
             current_learning_paths: Vec::new(),
             recent_interactions,
-            search_history: Vec::new(),
         })
     }
 

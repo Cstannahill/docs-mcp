@@ -5,8 +5,15 @@ pub mod database;
 pub mod embeddings;
 pub mod enhanced_search;
 pub mod fetcher;
+pub mod file_manager;
 pub mod http_server;
 pub mod learning;
 pub mod ranking;
 pub mod server;
 pub mod scheduler;
+pub mod web_search;
+
+// New agentic flow architecture modules
+pub mod agents;
+pub mod orchestrator;
+pub mod model_clients;

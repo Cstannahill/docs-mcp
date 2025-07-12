@@ -9,8 +9,17 @@ use tokio::sync::{Semaphore, Mutex};
 use tokio::time::sleep;
 use tracing::{info, warn, error};
 use url::Url;
+use regex;
 
 use crate::database::{Database, DocumentPage, DocumentationSource, DocType};
+
+#[derive(Debug, Clone)]
+pub struct VersionInfo {
+    pub version: String,
+    pub release_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub is_latest: bool,
+    pub is_stable: bool,
+}
 
 pub struct DocumentationFetcher {
     client: Client,
@@ -19,6 +28,8 @@ pub struct DocumentationFetcher {
     semaphore: Arc<Semaphore>,
     // Batch size for concurrent operations
     batch_size: usize,
+    // Version tracking
+    version_cache: Arc<Mutex<std::collections::HashMap<String, VersionInfo>>>,
 }
 
 impl DocumentationFetcher {
@@ -35,7 +46,120 @@ impl DocumentationFetcher {
             // Allow up to 10 concurrent requests to be respectful to servers
             semaphore: Arc::new(Semaphore::new(10)),
             batch_size: 50, // Process URLs in batches of 50
+            version_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Detect current version of documentation from a given URL
+    pub async fn detect_version(&self, source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        match source.doc_type {
+            DocType::Rust => self.detect_rust_version(source).await,
+            DocType::Python => self.detect_python_version(source).await,
+            DocType::TypeScript => self.detect_typescript_version(source).await,
+            DocType::React => self.detect_react_version(source).await,
+            DocType::Tauri => self.detect_tauri_version(source).await,
+            _ => Ok(None), // For now, other types don't have version detection
+        }
+    }
+
+    async fn detect_rust_version(&self, source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        // Rust docs typically show version in the page title or header
+        if let Ok(html) = self.fetch_page(&source.base_url).await {
+            let document = Html::parse_document(&html);
+            
+            // Look for version in title or header
+            if let Some(title) = document.select(&Selector::parse("title").unwrap()).next() {
+                let title_text = title.text().collect::<String>();
+                if title_text.contains("Rust") {
+                    // Extract version from patterns like "Rust 1.75.0" or similar
+                    if let Some(version) = self.extract_version_from_text(&title_text) {
+                        return Ok(Some(VersionInfo {
+                            version: version.clone(),
+                            release_date: None, // Could be enhanced to fetch release date
+                            is_latest: true,
+                            is_stable: !version.contains("beta") && !version.contains("nightly"),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn detect_python_version(&self, source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        // Python docs URL often contains version: https://docs.python.org/3.12/
+        if let Ok(url) = Url::parse(&source.base_url) {
+            if let Some(path_segments) = url.path_segments() {
+                for segment in path_segments {
+                    if segment.starts_with('3') && segment.contains('.') {
+                        return Ok(Some(VersionInfo {
+                            version: format!("Python {}", segment),
+                            release_date: None,
+                            is_latest: true,
+                            is_stable: true,
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn detect_typescript_version(&self, _source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        // TypeScript docs don't typically show version prominently
+        // Could be enhanced to check GitHub releases or package.json
+        Ok(None)
+    }
+
+    async fn detect_react_version(&self, source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        // React.dev is typically latest version
+        if source.base_url.contains("react.dev") {
+            return Ok(Some(VersionInfo {
+                version: "React 18+".to_string(),
+                release_date: None,
+                is_latest: true,
+                is_stable: true,
+            }));
+        }
+        Ok(None)
+    }
+
+    async fn detect_tauri_version(&self, source: &DocumentationSource) -> Result<Option<VersionInfo>> {
+        // Tauri version is often in the URL
+        if source.base_url.contains("v2.tauri.app") {
+            return Ok(Some(VersionInfo {
+                version: "2.0".to_string(),
+                release_date: None,
+                is_latest: true,
+                is_stable: false, // v2 is still in development
+            }));
+        } else if source.base_url.contains("v1.tauri.app") {
+            return Ok(Some(VersionInfo {
+                version: "1.x".to_string(),
+                release_date: None,
+                is_latest: false,
+                is_stable: true,
+            }));
+        }
+        Ok(None)
+    }
+
+    fn extract_version_from_text(&self, text: &str) -> Option<String> {
+        // Common version patterns: 1.75.0, v2.0, etc.
+        let version_patterns = [
+            regex::Regex::new(r"(\d+\.\d+\.\d+)").unwrap(),
+            regex::Regex::new(r"v(\d+\.\d+)").unwrap(),
+            regex::Regex::new(r"(\d+\.\d+)").unwrap(),
+        ];
+        
+        for pattern in &version_patterns {
+            if let Some(captures) = pattern.captures(text) {
+                if let Some(version) = captures.get(1) {
+                    return Some(version.as_str().to_string());
+                }
+            }
+        }
+        None
     }
 
     pub async fn update_all_documentation(&self) -> Result<()> {
@@ -86,7 +210,7 @@ impl DocumentationFetcher {
 
     async fn get_documentation_sources(&self) -> Result<Vec<DocumentationSource>> {
         // First, ensure all sources are in the database with current versions
-        let mut default_sources = vec![
+        let default_sources = vec![
             DocumentationSource {
                 id: "rust-std".to_string(),
                 name: "Rust Standard Library".to_string(),
@@ -203,20 +327,99 @@ impl DocumentationFetcher {
         self.db.get_sources().await
     }
 
-    async fn update_source_documentation(&self, source: &DocumentationSource) -> Result<()> {
-        info!("Starting update for {}", source.name);
+    /// Check if source needs updating by looking at database
+    async fn should_update_source(&self, source: &DocumentationSource) -> Result<bool> {
+        // First check if we have any documents for this source
+        let existing_count = self.db.count_source_documents(&source.id).await?;
         
-        // Clear existing documents for this source
-        self.db.clear_source_documents(&source.id).await?;
+        if existing_count == 0 {
+            info!("No existing documents found for {}, will fetch", source.name);
+            return Ok(true);
+        }
+        
+        // Check if source has been updated recently (within last 24 hours)
+        if let Some(last_updated) = &source.last_updated {
+            let hours_since_update = chrono::Utc::now()
+                .signed_duration_since(*last_updated)
+                .num_hours();
+                
+            if hours_since_update < 24 {
+                info!("Source {} was updated {} hours ago, skipping", source.name, hours_since_update);
+                return Ok(false);
+            }
+        }
+        
+        // Detect current version
+        let detected_version = self.detect_version(source).await?;
+        
+        if let Some(version_info) = &detected_version {
+            // Check if we already have this version in the database
+            if let Some(stored_version) = &source.version {
+                if stored_version == &version_info.version {
+                    info!("Already have version {} for {}, skipping", stored_version, source.name);
+                    
+                    // Update in-memory cache
+                    let mut cache = self.version_cache.lock().await;
+                    let cache_key = format!("{}:{}", source.id, version_info.version);
+                    cache.insert(cache_key, version_info.clone());
+                    
+                    return Ok(false);
+                } else {
+                    info!("Version changed from {} to {} for {}, will update", 
+                          stored_version, version_info.version, source.name);
+                    return Ok(true);
+                }
+            }
+        }
+        
+        // Default to updating if we can't determine version
+        Ok(true)
+    }
 
-        match source.doc_type {
-            DocType::Rust => self.fetch_rust_docs(source).await,
-            DocType::React => self.fetch_react_docs(source).await,
-            DocType::TypeScript => self.fetch_typescript_docs(source).await,
-            DocType::Python => self.fetch_python_docs(source).await,
-            DocType::Tauri => self.fetch_tauri_docs_recursive(source).await,
-            DocType::Tailwind => self.fetch_tailwind_docs(source).await,
-            DocType::Shadcn => self.fetch_shadcn_docs(source).await,
+    async fn update_source_documentation(&self, source: &DocumentationSource) -> Result<()> {
+        info!("Starting update check for {}", source.name);
+        
+        // Use database-aware version checking
+        let should_update = self.should_update_source(source).await?;
+        
+        if should_update {
+            // For multi-version support, we might want to preserve older versions
+            // For now, we'll clear and update, but this could be enhanced to:
+            // 1. Keep stable versions alongside latest
+            // 2. Mark deprecated versions for cleanup
+            // 3. Maintain version-specific source IDs
+            
+            info!("Clearing existing documents for source: {}", source.id);
+            self.db.clear_source_documents(&source.id).await?;
+            
+            // Update the source with current timestamp
+            let mut updated_source = source.clone();
+            updated_source.last_updated = Some(chrono::Utc::now());
+            self.db.add_source(&updated_source).await?;
+
+            match source.doc_type {
+                DocType::Rust => self.fetch_rust_docs(source).await,
+                DocType::React => self.fetch_react_docs(source).await,
+                DocType::TypeScript => self.fetch_typescript_docs(source).await,
+                DocType::Python => self.fetch_python_docs(source).await,
+                DocType::Tauri => self.fetch_tauri_docs_recursive(source).await,
+                DocType::Tailwind => self.fetch_tailwind_docs(source).await,
+                DocType::Shadcn => self.fetch_shadcn_docs(source).await,
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Update source documentation only if needed, returns true if updated
+    pub async fn update_source_documentation_if_needed(&self, source: &DocumentationSource) -> Result<bool> {
+        let should_update = self.should_update_source(source).await?;
+        
+        if should_update {
+            self.update_source_documentation(source).await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -485,10 +688,15 @@ impl DocumentationFetcher {
             "https://crates.io/help".to_string(),
         ];
 
-        // Add all starting URLs to visit queue
+        // Add all starting URLs to the queue with fragment normalization
         for url in starting_urls {
-            if visited.insert(url.clone()) {
-                to_visit.push_back(url);
+            if let Ok(parsed_url) = Url::parse(&url) {
+                let mut normalized_url = parsed_url.clone();
+                normalized_url.set_fragment(None);
+                
+                if visited.insert(normalized_url.to_string()) {
+                    to_visit.push_back(url);
+                }
             }
         }
 
@@ -676,7 +884,7 @@ impl DocumentationFetcher {
         true
     }
 
-    async fn fetch_react_docs(&self, source: &DocumentationSource) -> Result<()> {
+    pub async fn fetch_react_docs(&self, source: &DocumentationSource) -> Result<()> {
         // React docs main sections
         let sections = vec![
             "learn",
@@ -1646,6 +1854,7 @@ impl DocumentationFetcher {
         // Create a simple hash of the content
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
+        
         
         let mut hasher = DefaultHasher::new();
         content.hash(&mut hasher);

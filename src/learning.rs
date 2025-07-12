@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::database::{
     Database, LearningPath, LearningPathStep, UserLearningProgress, 
     DocumentPage, DocType, DifficultyLevel, ContentSuggestion, 
-    SuggestionType, UserContext, DocumentRelationship, RelationshipType
+    SuggestionType, UserContext
 };
 
 #[derive(Clone)]
@@ -137,7 +137,7 @@ impl LearningPathEngine {
             id: path_id.clone(),
             title: format!("Personalized {} Learning Path", target_topic),
             description: format!("A customized learning journey for {} tailored to your current skill level", target_topic),
-            difficulty_level: difficulty,
+            difficulty_level: difficulty.clone(),
             estimated_duration_minutes: self.estimate_path_duration(&relevant_pages).await?,
             doc_type: self.infer_doc_type(target_topic),
             created_by: "ai_generator".to_string(),
@@ -445,9 +445,9 @@ impl LearningPathEngine {
         
         // Return score from 0.0 (beginner) to 1.0 (advanced)
         if complex_count + beginner_count == 0.0 {
-            0.5 // Default to intermediate
+            Ok(0.5) // Default to intermediate
         } else {
-            complex_count / (complex_count + beginner_count)
+            Ok(complex_count / (complex_count + beginner_count))
         }
     }
 

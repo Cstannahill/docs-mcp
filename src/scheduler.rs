@@ -109,9 +109,16 @@ impl Scheduler {
     pub async fn start_daily_updates(&self) -> Result<()> {
         info!("Starting documentation update scheduler");
         
-        // Run initial update
-        if let Err(e) = self.force_update().await {
-            error!("Initial documentation update failed: {}", e);
+        // Check if we need an initial update by looking at existing data
+        let needs_initial_update = self.needs_initial_update().await?;
+        
+        if needs_initial_update {
+            info!("No existing documentation found, running initial update...");
+            if let Err(e) = self.smart_update().await {
+                error!("Initial documentation update failed: {}", e);
+            }
+        } else {
+            info!("Existing documentation found, skipping initial update");
         }
 
         info!("Daily update scheduler initialized. Manual updates can be triggered with force_update()");
@@ -434,5 +441,58 @@ impl Scheduler {
         // Update priorities every 100 searches or if we haven't updated in the last hour
         let total_searches: u32 = self.usage_analytics.search_frequency.values().sum();
         Ok(total_searches > 0 && total_searches % 100 == 0)
+    }
+    
+    /// Check if we need to run an initial update by examining existing data
+    async fn needs_initial_update(&self) -> Result<bool> {
+        // Check if we have any documentation sources with data
+        let sources = self.db.get_sources().await?;
+        
+        if sources.is_empty() {
+            info!("No documentation sources found, initial update needed");
+            return Ok(true);
+        }
+        
+        // Check if any source has documents
+        for source in &sources {
+            let doc_count = self.db.count_source_documents(&source.id).await?;
+            if doc_count > 0 {
+                info!("Found {} documents for source '{}', skipping initial update", doc_count, source.name);
+                return Ok(false);
+            }
+        }
+        
+        info!("Sources exist but no documents found, initial update needed");
+        Ok(true)
+    }
+
+    /// Smart update that checks if updates are actually needed
+    pub async fn smart_update(&self) -> Result<()> {
+        info!("Running smart documentation update (checks existing data)");
+        let fetcher = DocumentationFetcher::new(self.db.clone());
+        
+        // Get all sources and check each one individually
+        let sources = self.db.get_sources().await?;
+        let mut updated_count = 0;
+        
+        for source in sources {
+            // This will use our should_update_source logic
+            match fetcher.update_source_documentation_if_needed(&source).await {
+                Ok(was_updated) => {
+                    if was_updated {
+                        updated_count += 1;
+                        info!("Updated documentation for {}", source.name);
+                    } else {
+                        info!("Skipped update for {} (already current)", source.name);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to update {}: {}", source.name, e);
+                }
+            }
+        }
+        
+        info!("Smart update completed: {} sources updated", updated_count);
+        Ok(())
     }
 }

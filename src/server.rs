@@ -2,7 +2,6 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use tracing::{info, error, debug};
-use chrono::Utc;
 
 use crate::database::{Database, SearchQuery, SearchFilters, RankingPreferences, DocType};
 use crate::cache::DocumentCache;
@@ -10,7 +9,6 @@ use crate::ai_integration::{AIIntegrationEngine, AIContext, SkillLevel, Explanat
 use crate::enhanced_search::{EnhancedSearchSystem, EnhancedSearchRequest, SearchType, LearningSessionRequest, LearningFormat};
 use crate::database::{InteractionType, DifficultyLevel, UserContext};
 use crate::chat_interface::{ChatInterface, ChatRequest};
-use std::collections::HashMap;
 
 pub struct McpServer {
     db: Database,
@@ -59,9 +57,9 @@ impl McpServer {
             .map_err(|e| format!("Failed to initialize chat interface: {}", e))?;
         
         Ok(Self { 
-            db: database,
-            cache: DocumentCache::new(1000),
-            ai_engine: AIIntegrationEngine::new(None),
+            db: database.clone(),
+            cache: DocumentCache::new(1000, 500),
+            ai_engine: AIIntegrationEngine::new(database.clone()),
             enhanced_search,
             chat_interface,
         })
@@ -419,7 +417,7 @@ impl McpServer {
             "enhanced_search" => {
                     let query = arguments.get("query")
                         .and_then(|v| v.as_str())
-                        .ok_or("Query parameter is required")?;
+                        .ok_or_else(|| anyhow::anyhow!("Query parameter is required"))?;
                     
                     let session_id = arguments.get("sessionId")
                         .and_then(|v| v.as_str())
@@ -449,10 +447,10 @@ impl McpServer {
                         session_id,
                         user_context: None, // Could be populated from session data
                         search_type,
-                        filters: SearchFilters {
-                            doc_types: Vec::new(),
-                            difficulty_levels: Vec::new(),
-                            content_types: Vec::new(),
+                        filters: crate::enhanced_search::SearchFilters {
+                            doc_types: vec![],
+                            difficulty_levels: vec![],
+                            content_types: vec![],
                             date_range: None,
                             exclude_completed: false,
                         },
@@ -462,10 +460,10 @@ impl McpServer {
                     
                     match self.enhanced_search.enhanced_search(request).await {
                         Ok(response) => {
-                            serde_json::to_value(response).map_err(|e| e.to_string())?
+                            Ok(serde_json::to_value(response)?)
                         }
                         Err(e) => {
-                            return Err(format!("Enhanced search failed: {}", e));
+                            Err(anyhow::anyhow!("Enhanced search failed: {}", e))
                         }
                     }
                 }
@@ -473,7 +471,7 @@ impl McpServer {
                 "create_learning_session" => {
                     let topic = arguments.get("topic")
                         .and_then(|v| v.as_str())
-                        .ok_or("Topic parameter is required")?;
+                        .ok_or_else(|| anyhow::anyhow!("Topic parameter is required"))?;
                     
                     let session_id = arguments.get("sessionId")
                         .and_then(|v| v.as_str())
@@ -512,10 +510,10 @@ impl McpServer {
                     
                     match self.enhanced_search.create_learning_session(request).await {
                         Ok(response) => {
-                            serde_json::to_value(response).map_err(|e| e.to_string())?
+                            Ok(serde_json::to_value(response)?)
                         }
                         Err(e) => {
-                            return Err(format!("Learning session creation failed: {}", e));
+                            Err(anyhow::anyhow!("Learning session creation failed: {}", e))
                         }
                     }
                 }
@@ -523,11 +521,11 @@ impl McpServer {
                 "track_interaction" => {
                     let session_id = arguments.get("sessionId")
                         .and_then(|v| v.as_str())
-                        .ok_or("Session ID is required")?;
+                        .ok_or_else(|| anyhow::anyhow!("Session ID is required"))?;
                     
                     let page_id = arguments.get("pageId")
                         .and_then(|v| v.as_str())
-                        .ok_or("Page ID is required")?;
+                        .ok_or_else(|| anyhow::anyhow!("Page ID is required"))?;
                     
                     let interaction_type = arguments.get("interactionType")
                         .and_then(|v| v.as_str())
@@ -552,10 +550,10 @@ impl McpServer {
                         None,
                     ).await {
                         Ok(_) => {
-                            serde_json::json!({"status": "success", "message": "Interaction tracked"})
+                            Ok(serde_json::json!({"status": "success", "message": "Interaction tracked"}))
                         }
                         Err(e) => {
-                            return Err(format!("Failed to track interaction: {}", e));
+                            Err(anyhow::anyhow!("Failed to track interaction: {}", e))
                         }
                     }
                 }
@@ -569,18 +567,17 @@ impl McpServer {
                     let user_context = UserContext {
                         session_id: session_id.to_string(),
                         skill_level: Some(DifficultyLevel::Intermediate),
-                        preferred_topics: Vec::new(),
-                        current_learning_paths: Vec::new(),
-                        recent_interactions: Vec::new(),
-                        search_history: Vec::new(),
+                        preferred_doc_types: vec![],
+                        current_learning_paths: vec![],
+                        recent_interactions: vec![],
                     };
                     
-                    match self.enhanced_search.learning_engine.generate_recommendations(&user_context).await {
+                    match self.enhanced_search.generate_recommendations(&user_context).await {
                         Ok(recommendations) => {
-                            serde_json::to_value(recommendations).map_err(|e| e.to_string())?
+                            Ok(serde_json::to_value(recommendations)?)
                         }
                         Err(e) => {
-                            return Err(format!("Failed to generate recommendations: {}", e));
+                            Err(anyhow::anyhow!("Failed to generate recommendations: {}", e))
                         }
                     }
                 }
@@ -588,7 +585,7 @@ impl McpServer {
                 "chat" => {
                     let message = arguments.get("message")
                         .and_then(|v| v.as_str())
-                        .ok_or("Message parameter is required")?;
+                        .ok_or_else(|| anyhow::anyhow!("Message parameter is required"))?;
                     
                     let session_id = arguments.get("sessionId")
                         .and_then(|v| v.as_str())
@@ -607,10 +604,10 @@ impl McpServer {
                     
                     match self.chat_interface.process_chat(chat_request).await {
                         Ok(response) => {
-                            serde_json::to_value(response).map_err(|e| e.to_string())?
+                            Ok(serde_json::to_value(response)?)
                         }
                         Err(e) => {
-                            return Err(format!("Chat processing failed: {}", e));
+                            Err(anyhow::anyhow!("Chat processing failed: {}", e))
                         }
                     }
                 }

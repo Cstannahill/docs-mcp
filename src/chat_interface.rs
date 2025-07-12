@@ -2,13 +2,17 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use regex::Regex;
-use chrono::Utc;
 
-use crate::enhanced_search::{EnhancedSearchSystem, EnhancedSearchRequest, SearchType, SearchFilters, LearningSessionRequest, LearningFormat};
-use crate::database::{Database, InteractionType, DifficultyLevel, UserContext, DocType};
+use crate::enhanced_search::{EnhancedSearchSystem, EnhancedSearchRequest, SearchType, LearningSessionRequest, LearningFormat};
+use crate::database::{InteractionType, DifficultyLevel, UserContext, DocType};
+use crate::web_search::{WebSearchEngine, SearchRequest, SearchType as WebSearchType, SearchFilters as WebSearchFilters};
+use crate::file_manager::FileManager;
 
+#[derive(Clone)]
 pub struct ChatInterface {
     enhanced_search: EnhancedSearchSystem,
+    web_search: WebSearchEngine,
+    file_manager: FileManager,
     command_patterns: HashMap<String, Regex>,
 }
 
@@ -60,6 +64,45 @@ pub enum ParsedCommand {
         page_id: String,
     },
     GetLearningProgress,
+    // Web search commands
+    WebSearch {
+        query: String,
+        search_type: WebSearchType,
+        max_results: Option<usize>,
+    },
+    WebSearchProgramming {
+        query: String,
+        language: Option<String>,
+    },
+    WebSearchDocs {
+        query: String,
+        technology: Option<String>,
+    },
+    GetPageSummary {
+        url: String,
+    },
+    // File operation commands
+    ReadFile {
+        path: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+        append: bool,
+    },
+    ListDirectory {
+        path: String,
+        recursive: bool,
+    },
+    FindFiles {
+        pattern: String,
+        directory: Option<String>,
+    },
+    SearchFileContent {
+        query: String,
+        directory: Option<String>,
+        file_extensions: Option<Vec<String>>,
+    },
     Unknown(String),
 }
 
@@ -74,6 +117,28 @@ impl ChatInterface {
             Regex::new(r"(?i)(semantic|meaning|similar)\s+search\s+(?:for\s+)?(.+)").unwrap());
         command_patterns.insert("learning_search".to_string(), 
             Regex::new(r"(?i)(learn|tutorial|guide)\s+(?:about\s+)?(.+)").unwrap());
+        
+        // Web search patterns
+        command_patterns.insert("web_search".to_string(), 
+            Regex::new(r"(?i)(web search|google|search web|search online)\s+(?:for\s+)?(.+)").unwrap());
+        command_patterns.insert("programming_search".to_string(), 
+            Regex::new(r"(?i)(programming|code)\s+search\s+(?:for\s+)?(.+)").unwrap());
+        command_patterns.insert("docs_search".to_string(), 
+            Regex::new(r"(?i)(documentation|docs)\s+search\s+(?:for\s+)?(.+)").unwrap());
+        command_patterns.insert("page_summary".to_string(), 
+            Regex::new(r"(?i)(summarize|summary of)\s+(https?://\S+)").unwrap());
+        
+        // File operation patterns
+        command_patterns.insert("read_file".to_string(), 
+            Regex::new(r"(?i)(read|show|display|cat)\s+(?:file\s+)?(.+)").unwrap());
+        command_patterns.insert("write_file".to_string(), 
+            Regex::new(r"(?i)(write|create|save)\s+(?:file\s+)?(.+)").unwrap());
+        command_patterns.insert("list_dir".to_string(), 
+            Regex::new(r"(?i)(list|ls|dir|show)\s+(?:directory|folder|dir)\s+(.+)").unwrap());
+        command_patterns.insert("find_files".to_string(), 
+            Regex::new(r"(?i)(find|locate)\s+(?:files?\s+)?(.+)").unwrap());
+        command_patterns.insert("search_files".to_string(), 
+            Regex::new(r"(?i)(search|grep)\s+(?:in\s+)?files?\s+(?:for\s+)?(.+)").unwrap());
         
         // Learning patterns
         command_patterns.insert("create_tutorial".to_string(), 
@@ -103,6 +168,8 @@ impl ChatInterface {
 
         Ok(Self {
             enhanced_search,
+            web_search: WebSearchEngine::new(),
+            file_manager: FileManager::new("/workspaces/docs-mcp".into()),
             command_patterns,
         })
     }
@@ -137,6 +204,35 @@ impl ChatInterface {
             }
             ParsedCommand::GetLearningProgress => {
                 self.handle_get_progress(request.session_id).await
+            }
+            // Web search commands
+            ParsedCommand::WebSearch { query, search_type, max_results } => {
+                self.handle_web_search(query, search_type, max_results).await
+            }
+            ParsedCommand::WebSearchProgramming { query, language } => {
+                self.handle_web_search_programming(query, language).await
+            }
+            ParsedCommand::WebSearchDocs { query, technology } => {
+                self.handle_web_search_docs(query, technology).await
+            }
+            ParsedCommand::GetPageSummary { url } => {
+                self.handle_page_summary(url).await
+            }
+            // File operation commands
+            ParsedCommand::ReadFile { path } => {
+                self.handle_read_file(path).await
+            }
+            ParsedCommand::WriteFile { path, content, append } => {
+                self.handle_write_file(path, content, append).await
+            }
+            ParsedCommand::ListDirectory { path, recursive } => {
+                self.handle_list_directory(path, recursive).await
+            }
+            ParsedCommand::FindFiles { pattern, directory } => {
+                self.handle_find_files(pattern, directory).await
+            }
+            ParsedCommand::SearchFileContent { query, directory, file_extensions } => {
+                self.handle_search_file_content(query, directory, file_extensions).await
             }
             ParsedCommand::Unknown(msg) => {
                 self.handle_unknown(msg).await
@@ -210,6 +306,87 @@ impl ChatInterface {
                     }
                     "progress" => return ParsedCommand::GetLearningProgress,
                     "recommendations" => return ParsedCommand::GetRecommendations,
+                    // Web search commands
+                    "web_search" => {
+                        if let Some(query) = captures.get(2) {
+                            return ParsedCommand::WebSearch {
+                                query: query.as_str().to_string(),
+                                search_type: WebSearchType::General,
+                                max_results: None,
+                            };
+                        }
+                    }
+                    "programming_search" => {
+                        if let Some(query) = captures.get(2) {
+                            let language = self.extract_programming_language(message);
+                            return ParsedCommand::WebSearchProgramming {
+                                query: query.as_str().to_string(),
+                                language,
+                            };
+                        }
+                    }
+                    "docs_search" => {
+                        if let Some(query) = captures.get(2) {
+                            let technology = self.extract_technology(message);
+                            return ParsedCommand::WebSearchDocs {
+                                query: query.as_str().to_string(),
+                                technology,
+                            };
+                        }
+                    }
+                    "page_summary" => {
+                        if let Some(url) = captures.get(2) {
+                            return ParsedCommand::GetPageSummary {
+                                url: url.as_str().to_string(),
+                            };
+                        }
+                    }
+                    // File operation commands
+                    "read_file" => {
+                        if let Some(path) = captures.get(2) {
+                            return ParsedCommand::ReadFile {
+                                path: path.as_str().to_string(),
+                            };
+                        }
+                    }
+                    "write_file" => {
+                        if let Some(path) = captures.get(2) {
+                            // Simple parsing for write command (could be improved)
+                            return ParsedCommand::WriteFile {
+                                path: path.as_str().to_string(),
+                                content: "".to_string(), // Content would be provided in follow-up
+                                append: message.to_lowercase().contains("append"),
+                            };
+                        }
+                    }
+                    "list_dir" => {
+                        if let Some(path) = captures.get(2) {
+                            return ParsedCommand::ListDirectory {
+                                path: path.as_str().to_string(),
+                                recursive: message.to_lowercase().contains("recursive") || message.to_lowercase().contains("-r"),
+                            };
+                        }
+                    }
+                    "find_files" => {
+                        if let Some(pattern) = captures.get(2) {
+                            let directory = self.extract_directory(message);
+                            return ParsedCommand::FindFiles {
+                                pattern: pattern.as_str().to_string(),
+                                directory,
+                            };
+                        }
+                    }
+                    "search_files" => {
+                        if let Some(query) = captures.get(2) {
+                            let directory = self.extract_directory(message);
+                            let extensions = self.extract_file_extensions(message);
+                            return ParsedCommand::SearchFileContent {
+                                query: query.as_str().to_string(),
+                                directory,
+                                file_extensions: extensions,
+                            };
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -223,11 +400,11 @@ impl ChatInterface {
             query: query.clone(),
             session_id: session_id.clone(),
             user_context: None,
-            search_type,
-            filters: SearchFilters {
-                doc_types: Vec::new(),
-                difficulty_levels: Vec::new(),
-                content_types: Vec::new(),
+            search_type: search_type.clone(),
+            filters: crate::enhanced_search::SearchFilters {
+                doc_types: vec![],
+                difficulty_levels: vec![],
+                content_types: vec![],
                 date_range: None,
                 exclude_completed: false,
             },
@@ -246,8 +423,8 @@ impl ChatInterface {
                 i + 1,
                 result.page.title,
                 result.page.url,
-                result.ranking_factors.final_score,
-                result.page.doc_type
+                result.ranking_factors.text_relevance,
+                "Documentation" // Simplified for now
             ));
         }
 
@@ -331,13 +508,12 @@ impl ChatInterface {
         let user_context = UserContext {
             session_id: session_id.clone(),
             skill_level: Some(DifficultyLevel::Intermediate),
-            preferred_topics: Vec::new(),
+            preferred_doc_types: Vec::new(),
             current_learning_paths: Vec::new(),
             recent_interactions: Vec::new(),
-            search_history: Vec::new(),
         };
 
-        let recommendations = self.enhanced_search.learning_engine.generate_recommendations(&user_context).await?;
+        let recommendations = self.enhanced_search.generate_recommendations(&user_context).await?;
         
         let mut response_text = "Here are your personalized recommendations:\n\n".to_string();
         
@@ -387,7 +563,7 @@ impl ChatInterface {
         self.enhanced_search.track_interaction(
             &session_id,
             &page_id,
-            interaction_type,
+            interaction_type.clone(),
             duration,
             None,
         ).await?;
@@ -669,6 +845,427 @@ The system learns from your interactions to provide increasingly personalized re
             }
         }
         None
+    }
+
+    // Helper methods for new functionality
+    fn extract_programming_language(&self, message: &str) -> Option<String> {
+        let message_lower = message.to_lowercase();
+        if message_lower.contains("rust") {
+            Some("rust".to_string())
+        } else if message_lower.contains("python") {
+            Some("python".to_string())
+        } else if message_lower.contains("javascript") || message_lower.contains("js") {
+            Some("javascript".to_string())
+        } else if message_lower.contains("typescript") || message_lower.contains("ts") {
+            Some("typescript".to_string())
+        } else if message_lower.contains("go") || message_lower.contains("golang") {
+            Some("go".to_string())
+        } else if message_lower.contains("java") {
+            Some("java".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn extract_technology(&self, message: &str) -> Option<String> {
+        let message_lower = message.to_lowercase();
+        if message_lower.contains("react") {
+            Some("react".to_string())
+        } else if message_lower.contains("vue") {
+            Some("vue".to_string())
+        } else if message_lower.contains("angular") {
+            Some("angular".to_string())
+        } else if message_lower.contains("tauri") {
+            Some("tauri".to_string())
+        } else if message_lower.contains("node") {
+            Some("nodejs".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn extract_directory(&self, message: &str) -> Option<String> {
+        let dir_regex = Regex::new(r"in\s+(.+?)(?:\s|$)").unwrap();
+        if let Some(captures) = dir_regex.captures(message) {
+            if let Some(dir) = captures.get(1) {
+                return Some(dir.as_str().to_string());
+            }
+        }
+        None
+    }
+
+    fn extract_file_extensions(&self, message: &str) -> Option<Vec<String>> {
+        let ext_regex = Regex::new(r"\.(\w+)").unwrap();
+        let extensions: Vec<String> = ext_regex.captures_iter(message)
+            .filter_map(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string())
+            .collect();
+        
+        if extensions.is_empty() {
+            None
+        } else {
+            Some(extensions)
+        }
+    }
+
+    // New handler methods for web search
+    async fn handle_web_search(&self, query: String, search_type: WebSearchType, max_results: Option<usize>) -> Result<ChatResponse> {
+        let request = SearchRequest {
+            query: query.clone(),
+            max_results,
+            search_type,
+            filters: WebSearchFilters {
+                site: None,
+                file_type: None,
+                date_range: None,
+                language: None,
+            },
+        };
+
+        match self.web_search.search(request).await {
+            Ok(results) => {
+                let response = format!(
+                    "Found {} web results for '{}' (searched in {}ms):\n\n{}",
+                    results.results.len(),
+                    query,
+                    results.search_time_ms,
+                    results.results.iter()
+                        .take(10)
+                        .map(|r| format!("• **{}**\n  {}\n  {}", r.title, r.url, r.description))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("web_search".to_string()),
+                    results: Some(serde_json::to_value(&results)?),
+                    suggestions: results.suggestions,
+                    session_id: "web_search".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I encountered an error while searching the web: {}", e),
+                    action_taken: Some("web_search_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Try a different search query".to_string()],
+                    session_id: "web_search".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_web_search_programming(&self, query: String, language: Option<String>) -> Result<ChatResponse> {
+        match self.web_search.search_programming(&query, language.as_deref()).await {
+            Ok(results) => {
+                let lang_str = language.as_ref().map(|l| format!(" ({})", l)).unwrap_or_default();
+                let response = format!(
+                    "Found {} programming resources for '{}'{} (searched in {}ms):\n\n{}",
+                    results.results.len(),
+                    query,
+                    lang_str,
+                    results.search_time_ms,
+                    results.results.iter()
+                        .take(8)
+                        .map(|r| format!("• **{}**\n  {}\n  {}", r.title, r.url, r.description))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("programming_search".to_string()),
+                    results: Some(serde_json::to_value(&results)?),
+                    suggestions: results.suggestions,
+                    session_id: "programming_search".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I encountered an error while searching for programming resources: {}", e),
+                    action_taken: Some("programming_search_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Try a different programming topic".to_string()],
+                    session_id: "programming_search".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_web_search_docs(&self, query: String, technology: Option<String>) -> Result<ChatResponse> {
+        match self.web_search.search_documentation(&query, technology.as_deref()).await {
+            Ok(results) => {
+                let tech_str = technology.as_ref().map(|t| format!(" ({})", t)).unwrap_or_default();
+                let response = format!(
+                    "Found {} documentation resources for '{}'{} (searched in {}ms):\n\n{}",
+                    results.results.len(),
+                    query,
+                    tech_str,
+                    results.search_time_ms,
+                    results.results.iter()
+                        .take(8)
+                        .map(|r| format!("• **{}**\n  {}\n  {}", r.title, r.url, r.description))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("docs_search".to_string()),
+                    results: Some(serde_json::to_value(&results)?),
+                    suggestions: results.suggestions,
+                    session_id: "docs_search".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I encountered an error while searching for documentation: {}", e),
+                    action_taken: Some("docs_search_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Try a different technology or topic".to_string()],
+                    session_id: "docs_search".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_page_summary(&self, url: String) -> Result<ChatResponse> {
+        match self.web_search.get_page_summary(&url, 200).await {
+            Ok(summary) => {
+                let response = format!(
+                    "Summary of {}:\n\n{}{}",
+                    url,
+                    summary,
+                    if summary.len() > 800 { "\n\n[Summary truncated for readability]" } else { "" }
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("page_summary".to_string()),
+                    results: None,
+                    suggestions: vec![
+                        "Get full page content".to_string(),
+                        "Search for related topics".to_string(),
+                    ],
+                    session_id: "page_summary".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't retrieve the page summary: {}", e),
+                    action_taken: Some("page_summary_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Check if the URL is accessible".to_string()],
+                    session_id: "page_summary".to_string(),
+                })
+            }
+        }
+    }
+
+    // New handler methods for file operations
+    async fn handle_read_file(&self, path: String) -> Result<ChatResponse> {
+        match self.file_manager.read_file(&path).await {
+            Ok(content) => {
+                let preview = if content.len() > 2000 {
+                    format!("{}...\n\n[File truncated for display. Total length: {} characters]", 
+                           &content[..2000], content.len())
+                } else {
+                    content
+                };
+
+                Ok(ChatResponse {
+                    response: format!("Contents of {}:\n\n```\n{}\n```", path, preview),
+                    action_taken: Some("read_file".to_string()),
+                    results: None,
+                    suggestions: vec![
+                        "Search file content".to_string(),
+                        "Edit this file".to_string(),
+                    ],
+                    session_id: "file_read".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't read the file '{}': {}", path, e),
+                    action_taken: Some("read_file_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Check if the file exists and is readable".to_string()],
+                    session_id: "file_read".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_write_file(&self, path: String, content: String, append: bool) -> Result<ChatResponse> {
+        let operation = if append { 
+            self.file_manager.append_file(&path, &content).await 
+        } else { 
+            self.file_manager.write_file(&path, &content).await 
+        };
+
+        match operation {
+            Ok(_) => {
+                let action = if append { "appended to" } else { "written to" };
+                Ok(ChatResponse {
+                    response: format!("Successfully {} file '{}'", action, path),
+                    action_taken: Some("write_file".to_string()),
+                    results: None,
+                    suggestions: vec![
+                        "Read the file to verify".to_string(),
+                        "Search for similar files".to_string(),
+                    ],
+                    session_id: "file_write".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't write to file '{}': {}", path, e),
+                    action_taken: Some("write_file_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Check file permissions and path".to_string()],
+                    session_id: "file_write".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_list_directory(&self, path: String, recursive: bool) -> Result<ChatResponse> {
+        let operation = if recursive {
+            self.file_manager.list_directory(&path).await
+        } else {
+            self.file_manager.list_directory(&path).await
+        };
+
+        match operation {
+            Ok(entries) => {
+                let all_items: Vec<_> = entries.files.iter()
+                    .chain(entries.directories.iter())
+                    .collect();
+                
+                let response = format!(
+                    "Contents of {} ({} items):\n\n{}",
+                    path,
+                    all_items.len(),
+                    all_items.iter()
+                        .take(50)
+                        .map(|entry| {
+                            let size_str = if entry.is_file {
+                                format!(" ({} bytes)", entry.size)
+                            } else {
+                                " [DIR]".to_string()
+                            };
+                            format!("• {}{}", entry.name, size_str)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("list_directory".to_string()),
+                    results: Some(serde_json::to_value(&entries)?),
+                    suggestions: vec![
+                        "Read a specific file".to_string(),
+                        "Search in this directory".to_string(),
+                    ],
+                    session_id: "dir_list".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't list directory '{}': {}", path, e),
+                    action_taken: Some("list_directory_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Check if the directory exists".to_string()],
+                    session_id: "dir_list".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_find_files(&self, pattern: String, directory: Option<String>) -> Result<ChatResponse> {
+        let search_dir = directory.unwrap_or_else(|| ".".to_string());
+        
+        match self.file_manager.find_files(&pattern, Some(&search_dir)).await {
+            Ok(files) => {
+                let response = format!(
+                    "Found {} files matching pattern '{}' in {}:\n\n{}",
+                    files.len(),
+                    pattern,
+                    search_dir,
+                    files.iter()
+                        .take(30)
+                        .map(|file| format!("• {}", file.name))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("find_files".to_string()),
+                    results: Some(serde_json::to_value(&files)?),
+                    suggestions: vec![
+                        "Read one of these files".to_string(),
+                        "Search content in these files".to_string(),
+                    ],
+                    session_id: "file_find".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't find files with pattern '{}': {}", pattern, e),
+                    action_taken: Some("find_files_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Try a different search pattern".to_string()],
+                    session_id: "file_find".to_string(),
+                })
+            }
+        }
+    }
+
+    async fn handle_search_file_content(&self, query: String, directory: Option<String>, file_extensions: Option<Vec<String>>) -> Result<ChatResponse> {
+        let search_dir = directory.unwrap_or_else(|| ".".to_string());
+        
+        match self.file_manager.search_in_files(&query, Some(&search_dir), 3).await {
+            Ok(matches) => {
+                let response = format!(
+                    "Found {} matches for '{}' in {}:\n\n{}",
+                    matches.len(),
+                    query,
+                    search_dir,
+                    matches.iter()
+                        .take(20)
+                        .map(|m| format!("• **{}** ({} matches)\n  {}", 
+                            m.file_path.display(), 
+                            m.total_matches, 
+                            m.matches.first().map(|match_info| match_info.line_content.as_str()).unwrap_or("No match content")
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                );
+
+                Ok(ChatResponse {
+                    response,
+                    action_taken: Some("search_file_content".to_string()),
+                    results: Some(serde_json::to_value(&matches)?),
+                    suggestions: vec![
+                        "Read the full file".to_string(),
+                        "Refine the search query".to_string(),
+                    ],
+                    session_id: "content_search".to_string(),
+                })
+            }
+            Err(e) => {
+                Ok(ChatResponse {
+                    response: format!("Sorry, I couldn't search file content: {}", e),
+                    action_taken: Some("search_file_content_error".to_string()),
+                    results: None,
+                    suggestions: vec!["Try a different search term".to_string()],
+                    session_id: "content_search".to_string(),
+                })
+            }
+        }
     }
 }
 
