@@ -9,6 +9,7 @@ use crate::cache::DocumentCache;
 use crate::ai_integration::{AIIntegrationEngine, AIContext, SkillLevel, ExplanationStyle};
 use crate::enhanced_search::{EnhancedSearchSystem, EnhancedSearchRequest, SearchType, LearningSessionRequest, LearningFormat};
 use crate::database::{InteractionType, DifficultyLevel, UserContext};
+use crate::chat_interface::{ChatInterface, ChatRequest};
 use std::collections::HashMap;
 
 pub struct McpServer {
@@ -16,6 +17,7 @@ pub struct McpServer {
     cache: DocumentCache,
     ai_engine: AIIntegrationEngine,
     enhanced_search: EnhancedSearchSystem,
+    chat_interface: ChatInterface,
 }
 
 #[derive(serde::Deserialize)]
@@ -53,9 +55,15 @@ impl McpServer {
         let enhanced_search = EnhancedSearchSystem::new(database.clone(), openai_api_key).await
             .map_err(|e| format!("Failed to initialize enhanced search system: {}", e))?;
         
+        let chat_interface = ChatInterface::new(enhanced_search.clone()).await
+            .map_err(|e| format!("Failed to initialize chat interface: {}", e))?;
+        
         Ok(Self { 
-            database,
+            db: database,
+            cache: DocumentCache::new(1000),
+            ai_engine: AIIntegrationEngine::new(None),
             enhanced_search,
+            chat_interface,
         })
     }
 
@@ -367,6 +375,28 @@ impl McpServer {
                             }
                         }
                     }
+                },
+                {
+                    "name": "chat",
+                    "description": "Natural language interface for interacting with the documentation system. Supports search, learning, recommendations, and more through conversational commands.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "Natural language message or command"
+                            },
+                            "sessionId": {
+                                "type": "string",
+                                "description": "User session ID for personalization and context"
+                            },
+                            "context": {
+                                "type": "string",
+                                "description": "Additional context for the conversation"
+                            }
+                        },
+                        "required": ["message"]
+                    }
                 }
             ]
         }))
@@ -551,6 +581,36 @@ impl McpServer {
                         }
                         Err(e) => {
                             return Err(format!("Failed to generate recommendations: {}", e));
+                        }
+                    }
+                }
+                
+                "chat" => {
+                    let message = arguments.get("message")
+                        .and_then(|v| v.as_str())
+                        .ok_or("Message parameter is required")?;
+                    
+                    let session_id = arguments.get("sessionId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("default_session")
+                        .to_string();
+                    
+                    let context = arguments.get("context")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    
+                    let chat_request = ChatRequest {
+                        message: message.to_string(),
+                        session_id,
+                        context,
+                    };
+                    
+                    match self.chat_interface.process_chat(chat_request).await {
+                        Ok(response) => {
+                            serde_json::to_value(response).map_err(|e| e.to_string())?
+                        }
+                        Err(e) => {
+                            return Err(format!("Chat processing failed: {}", e));
                         }
                     }
                 }

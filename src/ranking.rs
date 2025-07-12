@@ -6,6 +6,7 @@ use crate::database::{
     RankingFactors, SearchFilters, DocType, DifficultyLevel
 };
 
+#[derive(Clone)]
 pub struct AdvancedRankingEngine {
     db: Database,
     weights: RankingWeights,

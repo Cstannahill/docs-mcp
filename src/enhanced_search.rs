@@ -8,6 +8,7 @@ use crate::embeddings::EmbeddingService;
 use crate::ranking::AdvancedRankingEngine;
 use crate::learning::{LearningPathEngine, LearningRecommendation, InteractiveTutorial};
 
+#[derive(Clone)]
 pub struct EnhancedSearchSystem {
     db: Database,
     embedding_service: EmbeddingService,

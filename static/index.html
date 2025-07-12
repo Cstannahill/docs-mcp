@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Enhanced Documentation Chat</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .container {
+        background: white;
+        border-radius: 20px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        width: 90%;
+        max-width: 800px;
+        height: 80vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 24px;
+        margin-bottom: 8px;
+      }
+
+      .header p {
+        opacity: 0.9;
+        font-size: 14px;
+      }
+
+      .chat-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        background: #f8f9fa;
+      }
+
+      .message {
+        margin-bottom: 16px;
+        display: flex;
+        align-items: flex-start;
+      }
+
+      .message.user {
+        justify-content: flex-end;
+      }
+
+      .message-content {
+        max-width: 70%;
+        padding: 12px 16px;
+        border-radius: 18px;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+
+      .message.user .message-content {
+        background: #667eea;
+        color: white;
+      }
+
+      .message.assistant .message-content {
+        background: white;
+        border: 1px solid #e1e8ed;
+        white-space: pre-wrap;
+      }
+
+      .suggestions {
+        margin-top: 8px;
+      }
+
+      .suggestion {
+        display: inline-block;
+        background: #e3f2fd;
+        color: #1976d2;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        margin: 2px;
+        cursor: pointer;
+        border: 1px solid #bbdefb;
+      }
+
+      .suggestion:hover {
+        background: #bbdefb;
+      }
+
+      .input-container {
+        padding: 20px;
+        background: white;
+        border-top: 1px solid #e1e8ed;
+      }
+
+      .input-form {
+        display: flex;
+        gap: 12px;
+      }
+
+      .input-field {
+        flex: 1;
+        padding: 12px 16px;
+        border: 2px solid #e1e8ed;
+        border-radius: 25px;
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+
+      .input-field:focus {
+        border-color: #667eea;
+      }
+
+      .send-button {
+        padding: 12px 24px;
+        background: #667eea;
+        color: white;
+        border: none;
+        border-radius: 25px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: background 0.2s;
+      }
+
+      .send-button:hover {
+        background: #5a6fd8;
+      }
+
+      .send-button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+
+      .examples {
+        margin-top: 12px;
+        font-size: 12px;
+        color: #666;
+      }
+
+      .example {
+        display: inline-block;
+        background: #f0f0f0;
+        padding: 4px 8px;
+        border-radius: 8px;
+        margin: 2px;
+        cursor: pointer;
+      }
+
+      .example:hover {
+        background: #e0e0e0;
+      }
+
+      .loading {
+        display: flex;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .loader {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #667eea;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .session-info {
+        font-size: 12px;
+        color: #666;
+        text-align: center;
+        padding: 8px;
+        background: #f8f9fa;
+        border-bottom: 1px solid #e1e8ed;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🤖 Enhanced Documentation Chat</h1>
+        <p>
+          AI-powered documentation with 8,563+ pages across Rust, TypeScript,
+          Python, React & Tauri
+        </p>
+      </div>
+
+      <div class="session-info">
+        Session ID: <span id="sessionId">default_session</span> |
+        <button
+          onclick="generateNewSession()"
+          style="
+            background: none;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+          "
+        >
+          New Session
+        </button>
+      </div>
+
+      <div class="chat-container">
+        <div id="messages" class="messages">
+          <div class="message assistant">
+            <div class="message-content">
+              Welcome! I'm your AI documentation assistant. I can help you with:
+              • 🔍 Search documentation ("search for rust async programming") •
+              📚 Create learning paths ("teach me TypeScript basics") • 🎯 Build
+              tutorials ("create tutorial for Python web development") • 💡 Get
+              recommendations ("get recommendations") • 📖 Explain concepts
+              ("explain closures in rust") Try one of the examples below or ask
+              me anything!
+            </div>
+            <div class="suggestions">
+              <span class="suggestion" onclick="sendExample(this)"
+                >search for rust async programming</span
+              >
+              <span class="suggestion" onclick="sendExample(this)"
+                >teach me TypeScript basics</span
+              >
+              <span class="suggestion" onclick="sendExample(this)"
+                >create tutorial for Python web development</span
+              >
+              <span class="suggestion" onclick="sendExample(this)"
+                >get recommendations</span
+              >
+              <span class="suggestion" onclick="sendExample(this)"
+                >explain closures</span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="input-container">
+        <form class="input-form" onsubmit="sendMessage(event)">
+          <input
+            type="text"
+            id="messageInput"
+            class="input-field"
+            placeholder="Ask me about documentation, create tutorials, get recommendations..."
+            autocomplete="off"
+          />
+          <button type="submit" class="send-button" id="sendButton">
+            Send
+          </button>
+        </form>
+        <div class="examples">
+          <strong>Try:</strong>
+          <span class="example" onclick="setExample(this)"
+            >search for rust ownership</span
+          >
+          <span class="example" onclick="setExample(this)"
+            >learn about async await</span
+          >
+          <span class="example" onclick="setExample(this)"
+            >create beginner tutorial for React hooks</span
+          >
+          <span class="example" onclick="setExample(this)"
+            >semantic search functional programming</span
+          >
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let sessionId = "web_session_" + Date.now();
+      document.getElementById("sessionId").textContent = sessionId;
+
+      function generateNewSession() {
+        sessionId = "web_session_" + Date.now();
+        document.getElementById("sessionId").textContent = sessionId;
+        addMessage(
+          "assistant",
+          "New session started! Your learning profile has been reset."
+        );
+      }
+
+      function addMessage(sender, content, suggestions = []) {
+        const messagesContainer = document.getElementById("messages");
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${sender}`;
+
+        let suggestionsHtml = "";
+        if (suggestions && suggestions.length > 0) {
+          suggestionsHtml =
+            '<div class="suggestions">' +
+            suggestions
+              .map(
+                (s) =>
+                  `<span class="suggestion" onclick="sendExample(this)">${s}</span>`
+              )
+              .join("") +
+            "</div>";
+        }
+
+        messageDiv.innerHTML = `
+                <div class="message-content">${content}</div>
+                ${suggestionsHtml}
+            `;
+
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+
+      function showLoading() {
+        const messagesContainer = document.getElementById("messages");
+        const loadingDiv = document.createElement("div");
+        loadingDiv.className = "loading";
+        loadingDiv.id = "loadingIndicator";
+        loadingDiv.innerHTML = '<div class="loader"></div>';
+        messagesContainer.appendChild(loadingDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+
+      function hideLoading() {
+        const loading = document.getElementById("loadingIndicator");
+        if (loading) loading.remove();
+      }
+
+      async function sendMessage(event) {
+        event.preventDefault();
+
+        const input = document.getElementById("messageInput");
+        const button = document.getElementById("sendButton");
+        const message = input.value.trim();
+
+        if (!message) return;
+
+        // Add user message
+        addMessage("user", message);
+
+        // Clear input and disable button
+        input.value = "";
+        button.disabled = true;
+
+        // Show loading
+        showLoading();
+
+        try {
+          const response = await fetch(
+            `/chat?message=${encodeURIComponent(
+              message
+            )}&session_id=${sessionId}`
+          );
+          const data = await response.json();
+
+          hideLoading();
+
+          if (data.success) {
+            const chatResponse = data.data;
+            addMessage(
+              "assistant",
+              chatResponse.response,
+              chatResponse.suggestions
+            );
+
+            if (chatResponse.action_taken) {
+              console.log("Action taken:", chatResponse.action_taken);
+            }
+          } else {
+            addMessage(
+              "assistant",
+              "Sorry, I encountered an error processing your request. Please try again."
+            );
+          }
+        } catch (error) {
+          hideLoading();
+          addMessage(
+            "assistant",
+            "Sorry, I couldn't connect to the server. Please check if the server is running on http://localhost:3000"
+          );
+          console.error("Error:", error);
+        }
+
+        button.disabled = false;
+        input.focus();
+      }
+
+      function sendExample(element) {
+        const message = element.textContent;
+        document.getElementById("messageInput").value = message;
+        document
+          .querySelector(".input-form")
+          .dispatchEvent(new Event("submit"));
+      }
+
+      function setExample(element) {
+        document.getElementById("messageInput").value = element.textContent;
+        document.getElementById("messageInput").focus();
+      }
+
+      // Focus input on load
+      document.getElementById("messageInput").focus();
+
+      // Handle enter key
+      document
+        .getElementById("messageInput")
+        .addEventListener("keypress", function (e) {
+          if (e.key === "Enter") {
+            sendMessage(e);
+          }
+        });
+    </script>
+  </body>
+</html>

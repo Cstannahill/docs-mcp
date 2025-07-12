@@ -1,9 +1,11 @@
 pub mod ai_integration;
 pub mod cache;
+pub mod chat_interface;
 pub mod database;
 pub mod embeddings;
 pub mod enhanced_search;
 pub mod fetcher;
+pub mod http_server;
 pub mod learning;
 pub mod ranking;
 pub mod server;

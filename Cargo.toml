@@ -48,6 +48,10 @@ html-escape = "0.2"
 # File system
 dirs = "5.0"
 
+# HTTP server for direct access
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
 [dev-dependencies]
 tempfile = "3.8"
 

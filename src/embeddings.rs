@@ -5,6 +5,7 @@ use tokio::time::{timeout, Duration};
 use reqwest::Client;
 use crate::database::{Database, DocumentEmbedding, DocumentPage};
 
+#[derive(Clone)]
 pub struct EmbeddingService {
     client: Client,
     api_key: Option<String>,

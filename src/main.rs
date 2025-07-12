@@ -1,7 +1,13 @@
 mod ai_integration;
 mod cache;
+mod chat_interface;
 mod database;
+mod embeddings;
+mod enhanced_search;
 mod fetcher;
+mod http_server;
+mod learning;
+mod ranking;
 mod server;
 mod scheduler;
 
@@ -13,6 +19,7 @@ use tracing_subscriber;
 
 use database::Database;
 use server::McpServer;
+use http_server::HttpServer;
 use scheduler::Scheduler;
 
 #[tokio::main]
@@ -44,12 +51,28 @@ async fn main() -> Result<()> {
                 .value_name("KEY")
                 .help("OpenAI API key for enhanced AI features (optional)")
         )
+        .arg(
+            Arg::new("http-server")
+                .long("http-server")
+                .action(clap::ArgAction::SetTrue)
+                .help("Start HTTP server instead of MCP server for direct access")
+        )
+        .arg(
+            Arg::new("port")
+                .long("port")
+                .value_name("PORT")
+                .help("Port for HTTP server (default: 3000)")
+                .default_value("3000")
+        )
         .get_matches();
 
     let db_path = matches.get_one::<String>("database").unwrap();
     let update_now = matches.get_flag("update-now");
     let openai_api_key = matches.get_one::<String>("openai-api-key").cloned()
         .or_else(|| std::env::var("OPENAI_API_KEY").ok());
+    let http_mode = matches.get_flag("http-server");
+    let port = matches.get_one::<String>("port").unwrap().parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("Invalid port number"))?;
 
     // Ensure database directory exists
     if let Some(parent) = PathBuf::from(db_path).parent() {
@@ -71,11 +94,18 @@ async fn main() -> Result<()> {
     // Start daily update scheduler
     scheduler.start_daily_updates().await?;
 
-    // Create and start MCP server
-    let server = McpServer::new(&db_url, openai_api_key).await?;
-    
-    info!("Starting MCP server...");
-    server.run().await?;
+    if http_mode {
+        // Start HTTP server for direct access
+        info!("Starting HTTP server mode on port {}", port);
+        let http_server = HttpServer::new(&db_url, openai_api_key).await?;
+        http_server.start_server(port).await?;
+    } else {
+        // Create and start MCP server
+        let server = McpServer::new(&db_url, openai_api_key).await?;
+        
+        info!("Starting MCP server...");
+        server.run().await?;
+    }
 
     Ok(())
 }

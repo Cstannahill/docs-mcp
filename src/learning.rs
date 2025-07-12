@@ -9,6 +9,7 @@ use crate::database::{
     SuggestionType, UserContext, DocumentRelationship, RelationshipType
 };
 
+#[derive(Clone)]
 pub struct LearningPathEngine {
     db: Database,
 }
