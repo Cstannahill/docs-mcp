@@ -17,3 +17,4 @@ pub mod web_search;
 pub mod agents;
 pub mod orchestrator;
 pub mod model_clients;
+pub mod model_discovery;

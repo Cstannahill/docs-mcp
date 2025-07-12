@@ -74,21 +74,44 @@ impl ModelRouter {
                 ModelCapability::CodeUnderstanding,
                 ModelCapability::Debugging,
                 ModelCapability::PerformanceAnalysis,
+                ModelCapability::PatternRecognition,
                 ModelCapability::Documentation,
                 ModelCapability::Explanation,
+                ModelCapability::SecurityAnalysis,
             ]
         } else if model_name.contains("gemma") {
             vec![
                 ModelCapability::TextGeneration,
                 ModelCapability::Reasoning,
                 ModelCapability::PerformanceAnalysis,
+                ModelCapability::PatternRecognition,
                 ModelCapability::Documentation,
                 ModelCapability::Explanation,
+                ModelCapability::CodeUnderstanding,
             ]
-        } else {
+        } else if model_name.contains("llama") || model_name.contains("zephyr") || model_name.contains("devstral") {
+            // General purpose models with good reasoning capabilities
             vec![
                 ModelCapability::TextGeneration,
                 ModelCapability::Reasoning,
+                ModelCapability::CodeUnderstanding,
+                ModelCapability::PatternRecognition,
+                ModelCapability::Documentation,
+                ModelCapability::Explanation,
+                ModelCapability::Debugging,
+            ]
+        } else if model_name.contains("embed") {
+            // Embedding models have limited capabilities
+            vec![
+                ModelCapability::PatternRecognition,
+            ]
+        } else {
+            // Default capabilities for unknown models
+            vec![
+                ModelCapability::TextGeneration,
+                ModelCapability::Reasoning,
+                ModelCapability::CodeUnderstanding,
+                ModelCapability::PatternRecognition,
                 ModelCapability::Documentation,
                 ModelCapability::Explanation,
             ]
