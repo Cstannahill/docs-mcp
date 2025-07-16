@@ -33,7 +33,7 @@ impl Agent for SecurityAuditorAgent {
             context_text.push_str(&turn.assistant_response);
             context_text.push_str(" ");
         }
-        let code: String = context.input.get_field("code")?;
+        let code: String = context.get_global_context::<String>("code").ok_or_else(|| anyhow::anyhow!("Missing 'code' in global context"))?;
         let full_code = format!("{} {}", context_text, code);
         // TODO: Use model client for real security analysis
         let report = format!("No vulnerabilities found in: {}", full_code);
@@ -47,6 +47,6 @@ impl Agent for SecurityAuditorAgent {
         Ok(serde_json::json!({ "security_report": report }))
     }
     async fn can_handle(&self, context: &FlowContext) -> bool {
-        context.input.has_field("code")
+        context.metadata.contains_key("code")
     }
 }

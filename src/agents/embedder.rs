@@ -40,7 +40,7 @@ impl Agent for EmbedderAgent {
             context_text.push_str(" ");
         }
 
-        let text: String = context.input.get_field("text")?;
+        let text: String = context.get_global_context::<String>("text").ok_or_else(|| anyhow::anyhow!("Missing 'text' in global context"))?;
         let full_text = format!("{} {}", context_text, text);
 
         // TODO: Use model client for real embedding generation
@@ -58,6 +58,6 @@ impl Agent for EmbedderAgent {
         Ok(serde_json::json!({ "embedding": embedding }))
     }
     async fn can_handle(&self, context: &FlowContext) -> bool {
-        context.input.has_field("text")
+        context.metadata.contains_key("text")
     }
 }

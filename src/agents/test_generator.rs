@@ -33,7 +33,7 @@ impl Agent for TestGeneratorAgent {
             context_text.push_str(&turn.assistant_response);
             context_text.push_str(" ");
         }
-        let code: String = context.input.get_field("code")?;
+        let code: String = context.get_global_context::<String>("code").ok_or_else(|| anyhow::anyhow!("Missing 'code' in global context"))?;
         let full_code = format!("{} {}", context_text, code);
         // TODO: Use model client for real test generation
         let test = format!("#[test]\nfn test_generated() {{ /* test for: {} */ }}", full_code);
@@ -47,6 +47,6 @@ impl Agent for TestGeneratorAgent {
         Ok(serde_json::json!({ "test_code": test }))
     }
     async fn can_handle(&self, context: &FlowContext) -> bool {
-        context.input.has_field("code")
+        context.metadata.contains_key("code")
     }
 }
